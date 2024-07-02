@@ -105,3 +105,11 @@ class PairedImagesDataset(Dataset):
             aerial_image = self.transform_aerial(aerial_image)
 
         return ground_image, aerial_image
+    
+
+def get_patch_embeddings(model, x):
+    x = model.patch_embed(x)
+    for blk in model.blocks:
+        x = blk(x)
+    x = model.norm(x)
+    return x
