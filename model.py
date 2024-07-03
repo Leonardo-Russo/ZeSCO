@@ -15,6 +15,10 @@ from torch.utils.data import Dataset, DataLoader
 import os
 import random
 from utils import *
+import torch.nn.functional as F
+
+import warnings
+warnings.simplefilter("ignore", category=UserWarning)
 
 
 class ModifiedAttention(nn.Module):
@@ -93,7 +97,8 @@ class CroDINO(nn.Module):
         modified_blocks = nn.ModuleList([ModifiedNestedTensorBlock(blk) for blk in original_model.blocks])
         
         self.patch_embed = original_model.patch_embed
-        self.blocks = modified_blocks
+        # self.blocks = modified_blocks
+        self.blocks = original_model.blocks
         self.norm = original_model.norm
         self.head = original_model.head
         
@@ -102,9 +107,8 @@ class CroDINO(nn.Module):
         self.final_attention = SingleHeadAttention(embed_dim)
 
         # Positional Encoding
-        self.pos_embed = nn.Parameter(original_model.pos_embed)  # use the original positional embedding and adjust dynamically
-        # self.pos_embed = nn.Parameter(torch.cat([original_model.pos_embed[:, :num_patches], original_model.pos_embed[:, :num_patches]], dim=1))
-        # self.pos_embed = nn.Parameter(self.pos_embed[:, :512, :])  # 512 = 256 patches per image * 2 images
+        self.pos_embed_1 = nn.Parameter(original_model.pos_embed)  # use the original positional embedding and adjust dynamically
+        self.pos_embed_2 = nn.Parameter(original_model.pos_embed)  # use the original positional embedding and adjust dynamically
 
         # Freeze parameters if pretrained is True
         if pretrained:
@@ -124,8 +128,14 @@ class CroDINO(nn.Module):
         # Compute positional encodings dynamically
         num_patches_x1 = x1.size(1)
         num_patches_x2 = x2.size(1)
-        pos_embed_x1 = self.pos_embed[:, :num_patches_x1, :]
-        pos_embed_x2 = self.pos_embed[:, :num_patches_x2, :]
+
+        # Interpolate positional embeddings to match the number of patches
+        pos_embed_x1 = self.interpolate_pos_embed(self.pos_embed_1, num_patches_x1)
+        pos_embed_x2 = self.interpolate_pos_embed(self.pos_embed_2, num_patches_x2)
+        # print("x1 shape: ", x1.shape)
+        # print("x2 shape: ", x2.shape)
+        # print("pos_embed_x1 shape: ", pos_embed_x1.shape)
+        # print("pos_embed_x2 shape: ", pos_embed_x2.shape)
         
         # Concatenate tokens from both images
         x = torch.cat((x1, x2), dim=1)
@@ -134,29 +144,36 @@ class CroDINO(nn.Module):
         pos_embed = torch.cat((pos_embed_x1, pos_embed_x2), dim=1)
         x = x + pos_embed
         
-        # Collect attention weights if needed
-        attention_weights = []
-        
         # Process through transformer blocks
         for blk in self.blocks:
-            if return_attention:
-                x, attn = blk(x, return_attention=True)
-                attention_weights.append(attn)
-            else:
-                x = blk(x)
+            x = blk(x)
         
         # Final single-head attention
-        _, final_attn = self.final_attention(x)         # NOTE: I'm computing the attention without affecting the patches
-        if return_attention:
-            attention_weights.append(final_attn)
+        _, final_attn = self.final_attention(x)         # NOTE: I'm computing the attention without affecting the patches           
         
         x = self.norm(x)
         x = self.head(x)
         
         if return_attention:
-            return x, attention_weights
+            return x, final_attn
         else:
             return x
+        
+    
+    def interpolate_pos_embed(self, pos_embed, num_patches):
+        """Interpolate positional embeddings to match the number of patches."""
+        original_num_patches = pos_embed.size(1)
+        if num_patches != original_num_patches:
+            # Calculate scaling factors for each dimension
+            scale_h = float(num_patches) / float(original_num_patches)
+            scale_w = 1.0  # Keep the width unchanged
+            # Calculate new positional embedding size
+            new_pos_embed_size = (int(scale_h * pos_embed.shape[1] + 0.5), int(scale_w * pos_embed.shape[2]))
+            # Interpolate the positional embedding tensor
+            pos_embed = F.interpolate(pos_embed.unsqueeze(0), size=new_pos_embed_size, mode='bicubic', align_corners=False)
+            pos_embed = pos_embed.squeeze(0)
+        return pos_embed
+
         
 
 def get_patch_embeddings(model, x):

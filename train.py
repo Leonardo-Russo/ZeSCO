@@ -30,7 +30,7 @@ def train(model, dino, train_loader, val_loader, device, criterion, optimizer, e
                 ground_image, aerial_image = ground_image.to(device), aerial_image.to(device)
 
                 # Forward pass
-                _, attentions = model(ground_image, aerial_image, return_attention=True)
+                _, attention = model(ground_image, aerial_image, return_attention=True)
                 
                 ground_tokens = dino(ground_image)
                 aerial_tokens = dino(aerial_image)
@@ -38,7 +38,7 @@ def train(model, dino, train_loader, val_loader, device, criterion, optimizer, e
                 aerial_tokens = get_patch_embeddings(dino, aerial_image)
 
                 # Visualize the final single-head attention layer
-                attention = attentions[-1].mean(dim=1)  # average across heads only
+                attention = attention.mean(dim=1)  # average across heads only
 
                 # Calculate the number of patches for ground and aerial images
                 patch_size = model.patch_embed.proj.kernel_size[0]
@@ -46,8 +46,8 @@ def train(model, dino, train_loader, val_loader, device, criterion, optimizer, e
                 num_patches_aerial = (aerial_image.shape[-1] // patch_size) * (aerial_image.shape[-2] // patch_size)
 
                 # Assuming batch size of 1 for simplicity
-                cross_attention_A2G = attention[:, :num_patches_ground, num_patches_ground:].detach()
-                cross_attention_G2A = attention[:, num_patches_ground:, :num_patches_ground].detach()
+                cross_attention_A2G = attention[:, :num_patches_ground, num_patches_ground:]
+                cross_attention_G2A = attention[:, num_patches_ground:, :num_patches_ground]
 
                 # Reconstruct the images from the tokens
                 reconstructed_aerial = torch.matmul(cross_attention_G2A, ground_tokens)
@@ -67,23 +67,8 @@ def train(model, dino, train_loader, val_loader, device, criterion, optimizer, e
                 criterion = nn.MSELoss()
                 loss_ground = criterion(reconstructed_ground, ground_tokens)
                 loss_aerial = criterion(reconstructed_aerial, aerial_tokens)
-                
-                
-                # # Reconstruct the images from the tokens
-                # patch_size = model.patch_embed.proj.kernel_size[0]
-                # num_patches_ground = (ground_image.shape[-1] // patch_size) * (ground_image.shape[-2] // patch_size)
-                # num_patches_aerial = (aerial_image.shape[-1] // patch_size) * (aerial_image.shape[-2] // patch_size)
-                
-                # cross_attention_A2G = attentions[-1][:, :num_patches_ground, num_patches_ground:].detach()
-                # cross_attention_G2A = attentions[-1][:, num_patches_ground:, :num_patches_ground].detach()
-                
-                # reconstructed_aerial = torch.matmul(cross_attention_G2A, ground_tokens.unsqueeze(0).repeat(cross_attention_G2A.size(0), 1, 1))
-                # reconstructed_ground = torch.matmul(cross_attention_A2G, aerial_tokens.unsqueeze(0).repeat(cross_attention_A2G.size(0), 1, 1))
-                
-                # # Compute MSE loss
-                # loss_ground = criterion(reconstructed_ground, ground_tokens.unsqueeze(0).repeat(reconstructed_ground.size(0), 1, 1))
-                # loss_aerial = criterion(reconstructed_aerial, aerial_tokens.unsqueeze(0).repeat(reconstructed_aerial.size(0), 1, 1))
-                loss = loss_ground + loss_aerial
+                # loss = loss_ground + loss_aerial
+                loss = loss_aerial
                 
                 running_loss += loss.item()
                 
@@ -163,7 +148,7 @@ if __name__ == '__main__':
     # Constants
     image_size = 224
     aerial_scaling = 2
-    batch_size = 64
+    batch_size = 1
     shuffle = True
 
     # Select device
@@ -174,12 +159,13 @@ if __name__ == '__main__':
     repo_name="facebookresearch/dinov2"
     model_name="dinov2_vitb14"
     model = CroDINO(repo_name, model_name, pretrained=True).to(device)
-    dino = torch.hub.load(repo_name, model_name).to(device)
+    dino = torch.hub.load(repo_name, model_name).to(device).eval()
+    print(model)
 
 
     # Optimizer
-    learning_rate = 1e-5
-    weight_decay = 1e-5
+    learning_rate = 1e-2
+    weight_decay = 0
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     # Loss function
