@@ -20,32 +20,36 @@ def train(model, dino, train_loader, val_loader, device, criterion, optimizer, e
     best_val_loss = np.inf
     patience_counter = 0
     best_model_path = None
+    sparse_attention_weight=0
 
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
 
         with tqdm(total=len(train_loader), desc=f'Epoch {epoch+1}/{epochs}', unit='batch') as pbar:
-            for ground_image, aerial_image in train_loader:
-                ground_image, aerial_image = ground_image.to(device), aerial_image.to(device)
+            for ground_images, aerial_images in train_loader:
+                ground_images, aerial_images = ground_images.to(device), aerial_images.to(device)
 
                 # Forward pass
-                _, attention = model(ground_image, aerial_image, return_attention=True)
+                _, attention = model(ground_images, aerial_images, return_attention=True)
                 
-                ground_tokens = dino(ground_image)
-                aerial_tokens = dino(aerial_image)
-                ground_tokens = get_patch_embeddings(dino, ground_image)
-                aerial_tokens = get_patch_embeddings(dino, aerial_image)
+                ground_tokens = dino(ground_images)
+                aerial_tokens = dino(aerial_images)
+                ground_tokens = get_patch_embeddings(dino, ground_images)
+                aerial_tokens = get_patch_embeddings(dino, aerial_images)
 
                 # Visualize the final single-head attention layer
                 attention = attention.mean(dim=1)  # average across heads only
 
                 # Calculate the number of patches for ground and aerial images
                 patch_size = model.patch_embed.proj.kernel_size[0]
-                num_patches_ground = (ground_image.shape[-1] // patch_size) * (ground_image.shape[-2] // patch_size)
-                num_patches_aerial = (aerial_image.shape[-1] // patch_size) * (aerial_image.shape[-2] // patch_size)
+                num_patches_ground = (ground_images.shape[-1] // patch_size) * (ground_images.shape[-2] // patch_size)
+                num_patches_aerial = (aerial_images.shape[-1] // patch_size) * (aerial_images.shape[-2] // patch_size)
 
-                # Assuming batch size of 1 for simplicity
+                # Crop the Attention - MAGIC TRICK
+                attention = attention[:, :num_patches_ground + num_patches_aerial, :num_patches_ground + num_patches_aerial]
+
+                # Get the Cross Attentions
                 cross_attention_A2G = attention[:, :num_patches_ground, num_patches_ground:]
                 cross_attention_G2A = attention[:, num_patches_ground:, :num_patches_ground]
 
@@ -63,12 +67,15 @@ def train(model, dino, train_loader, val_loader, device, criterion, optimizer, e
                     print("reconstructed_ground shape: ", reconstructed_ground.shape)
                     print("reconstructed_aerial shape: ", reconstructed_aerial.shape)
 
-                # Compute MSE loss
-                criterion = nn.MSELoss()
+                # Compute Loss
                 loss_ground = criterion(reconstructed_ground, ground_tokens)
                 loss_aerial = criterion(reconstructed_aerial, aerial_tokens)
                 # loss = loss_ground + loss_aerial
                 loss = loss_aerial
+
+                # Calculate sparse attention loss
+                sparse_attention_loss = sparse_attention_weight * torch.norm(attention, p=1)    # L1 norm
+                loss += sparse_attention_loss
                 
                 running_loss += loss.item()
                 
@@ -90,15 +97,17 @@ def train(model, dino, train_loader, val_loader, device, criterion, optimizer, e
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
+            if best_model_path:
+                os.remove(best_model_path)
             best_model_path = os.path.join(model_path, f'best_model_epoch_{epoch+1}.pth')
             torch.save(model.state_dict(), best_model_path)
         else:
             patience_counter += 1
         
-        # Save the last model
-        torch.save(model.state_dict(), os.path.join(model_path, f'last_model_epoch_{epoch+1}.pth'))
-        
         print(f'Epoch {epoch+1}/{epochs} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f}')
+
+    # Save the last model
+    torch.save(model.state_dict(), os.path.join(model_path, f'last_model_epoch_{epoch+1}.pth'))
 
     print('Training Complete!\nBest Validation Loss:', best_val_loss)
 
@@ -107,34 +116,43 @@ def validate(model, dino, val_loader, criterion, device):
     val_loss = 0
 
     with torch.no_grad():
-        for ground_image, aerial_image in val_loader:
-            ground_image, aerial_image = ground_image.to(device), aerial_image.to(device)
-            
-            # Forward pass
-            output, attentions = model(ground_image, aerial_image, return_attention=True)
-            
-            # Compute the output of the original DINOv2 model
-            dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14').to(device)
-            ground_tokens = dino(ground_image)
-            aerial_tokens = dino(aerial_image)
-            
-            # Reconstruct the images from the tokens
-            patch_size = model.patch_embed.proj.kernel_size[0]
-            num_patches_ground = (ground_image.shape[-1] // patch_size) * (ground_image.shape[-2] // patch_size)
-            num_patches_aerial = (aerial_image.shape[-1] // patch_size) * (aerial_image.shape[-2] // patch_size)
-            
-            cross_attention_A2G = attentions[-1][:, :num_patches_ground, num_patches_ground:].detach()
-            cross_attention_G2A = attentions[-1][:, num_patches_ground:, :num_patches_ground].detach()
-            
-            reconstructed_aerial = torch.matmul(cross_attention_G2A, ground_tokens.unsqueeze(0).repeat(cross_attention_G2A.size(0), 1, 1))
-            reconstructed_ground = torch.matmul(cross_attention_A2G, aerial_tokens.unsqueeze(0).repeat(cross_attention_A2G.size(0), 1, 1))
-            
-            # Compute MSE loss
-            loss_ground = criterion(reconstructed_ground, ground_tokens.unsqueeze(0).repeat(reconstructed_ground.size(0), 1, 1))
-            loss_aerial = criterion(reconstructed_aerial, aerial_tokens.unsqueeze(0).repeat(reconstructed_aerial.size(0), 1, 1))
-            loss = loss_ground + loss_aerial
-            
-            val_loss += loss.item()
+        for ground_images, aerial_images in val_loader:
+                ground_images, aerial_images = ground_images.to(device), aerial_images.to(device)
+
+                # Forward pass
+                _, attention = model(ground_images, aerial_images, return_attention=True)
+                
+                ground_tokens = dino(ground_images)
+                aerial_tokens = dino(aerial_images)
+                ground_tokens = get_patch_embeddings(dino, ground_images)
+                aerial_tokens = get_patch_embeddings(dino, aerial_images)
+
+                # Visualize the final single-head attention layer
+                attention = attention.mean(dim=1)  # average across heads only
+
+                # Calculate the number of patches for ground and aerial images
+                patch_size = model.patch_embed.proj.kernel_size[0]
+                num_patches_ground = (ground_images.shape[-1] // patch_size) * (ground_images.shape[-2] // patch_size)
+                num_patches_aerial = (aerial_images.shape[-1] // patch_size) * (aerial_images.shape[-2] // patch_size)
+
+                # Crop the Attention - MAGIC TRICK
+                attention = attention[:, :num_patches_ground + num_patches_aerial, :num_patches_ground + num_patches_aerial]
+
+                # Assuming batch size of 1 for simplicity
+                cross_attention_A2G = attention[:, :num_patches_ground, num_patches_ground:]
+                cross_attention_G2A = attention[:, num_patches_ground:, :num_patches_ground]
+
+                # Reconstruct the images from the tokens
+                reconstructed_aerial = torch.matmul(cross_attention_G2A, ground_tokens)
+                reconstructed_ground = torch.matmul(cross_attention_A2G, aerial_tokens)
+
+                # Compute Loss
+                loss_ground = criterion(reconstructed_ground, ground_tokens)
+                loss_aerial = criterion(reconstructed_aerial, aerial_tokens)
+                # loss = loss_ground + loss_aerial
+                loss = loss_aerial
+
+                val_loss += loss.item()
 
     val_loss /= len(val_loader)
     return val_loss
@@ -148,7 +166,7 @@ if __name__ == '__main__':
     # Constants
     image_size = 224
     aerial_scaling = 2
-    batch_size = 1
+    batch_size = 16
     shuffle = True
 
     # Select device
@@ -164,7 +182,7 @@ if __name__ == '__main__':
 
 
     # Optimizer
-    learning_rate = 1e-2
+    learning_rate = 1e-3
     weight_decay = 0
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
@@ -179,7 +197,8 @@ if __name__ == '__main__':
     ])
 
     transform_aerial = transforms.Compose([
-        transforms.CenterCrop((image_size // aerial_scaling, image_size // aerial_scaling)),
+        # transforms.CenterCrop((image_size // aerial_scaling, image_size // aerial_scaling)),
+        transforms.CenterCrop((image_size, image_size)),
         transforms.ToTensor()
     ])
 
@@ -188,7 +207,7 @@ if __name__ == '__main__':
 
     # Sample paired images
     dataset_path = '/home/lrusso/cvusa'
-    train_filenames, val_filenames = sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, groundtype='cutouts')
+    train_filenames, val_filenames = sample_paired_images(dataset_path, sample_percentage=0.01, split_ratio=0.8, groundtype='cutouts')
 
     # Instantiate the dataset and dataloader
     train_dataset = PairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground)
