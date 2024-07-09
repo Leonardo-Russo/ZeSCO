@@ -9,9 +9,9 @@ from PIL import ImageFile
 from tqdm import tqdm
 import numpy as np
 from dataset import PairedImagesDataset, sample_paired_images
-from model import CroDINO, get_patch_embeddings
+from model import CroDINO, CosineSimilarityLoss
 
-def train(model, dino, train_loader, val_loader, device, criterion, optimizer, epochs=1, save_path='untitled', debug=False):
+def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=1, save_path='untitled', debug=False):
     model.to(device)
     
     model_path = os.path.join('models', save_path)
@@ -31,23 +31,21 @@ def train(model, dino, train_loader, val_loader, device, criterion, optimizer, e
                 ground_images, aerial_images = ground_images.to(device), aerial_images.to(device)
 
                 # Forward pass
-                _, attention = model(ground_images, aerial_images, return_attention=True)
-                
-                ground_tokens = dino(ground_images)
-                aerial_tokens = dino(aerial_images)
-                ground_tokens = get_patch_embeddings(dino, ground_images)
-                aerial_tokens = get_patch_embeddings(dino, aerial_images)
+                ground_tokens, aerial_tokens, attention = model(ground_images, aerial_images)            
 
                 # Visualize the final single-head attention layer
                 attention = attention.mean(dim=1)  # average across heads only
 
                 # Calculate the number of patches for ground and aerial images
-                patch_size = model.patch_embed.proj.kernel_size[0]
-                num_patches_ground = (ground_images.shape[-1] // patch_size) * (ground_images.shape[-2] // patch_size)
-                num_patches_aerial = (aerial_images.shape[-1] // patch_size) * (aerial_images.shape[-2] // patch_size)
+                num_patches_ground = (ground_images.shape[-1] // model.patch_size) * (ground_images.shape[-2] // model.patch_size)
+                num_patches_aerial = (aerial_images.shape[-1] // model.patch_size) * (aerial_images.shape[-2] // model.patch_size)
 
-                # Crop the Attention - MAGIC TRICK
-                attention = attention[:, :num_patches_ground + num_patches_aerial, :num_patches_ground + num_patches_aerial]
+                # Remove the first row and column
+                attention = attention[:, 1:, 1:]
+
+                # Remove the row and column corresponding to 1+num_patches_ground
+                attention = torch.cat((attention[:, :num_patches_ground-1, :], attention[:, num_patches_ground:, :]), dim=1)
+                attention = torch.cat((attention[:, :, :num_patches_ground-1], attention[:, :, num_patches_ground:]), dim=2)
 
                 # Get the Cross Attentions
                 cross_attention_A2G = attention[:, :num_patches_ground, num_patches_ground:]
@@ -73,9 +71,9 @@ def train(model, dino, train_loader, val_loader, device, criterion, optimizer, e
                 # loss = loss_ground + loss_aerial
                 loss = loss_aerial
 
-                # Calculate sparse attention loss
-                sparse_attention_loss = sparse_attention_weight * torch.norm(attention, p=1)    # L1 norm
-                loss += sparse_attention_loss
+                # # Calculate sparse attention loss
+                # sparse_attention_loss = sparse_attention_weight * torch.norm(attention, p=1)    # L1 norm
+                # loss += sparse_attention_loss
                 
                 running_loss += loss.item()
                 
@@ -91,7 +89,7 @@ def train(model, dino, train_loader, val_loader, device, criterion, optimizer, e
         train_loss = running_loss / len(train_loader)
         
         # Validation
-        val_loss = validate(model, dino, val_loader, criterion, device)
+        val_loss = validate(model, val_loader, criterion, device)
         
         # Save the best model
         if val_loss < best_val_loss:
@@ -111,7 +109,7 @@ def train(model, dino, train_loader, val_loader, device, criterion, optimizer, e
 
     print('Training Complete!\nBest Validation Loss:', best_val_loss)
 
-def validate(model, dino, val_loader, criterion, device):
+def validate(model, val_loader, criterion, device):
     model.eval()
     val_loss = 0
 
@@ -120,26 +118,24 @@ def validate(model, dino, val_loader, criterion, device):
                 ground_images, aerial_images = ground_images.to(device), aerial_images.to(device)
 
                 # Forward pass
-                _, attention = model(ground_images, aerial_images, return_attention=True)
-                
-                ground_tokens = dino(ground_images)
-                aerial_tokens = dino(aerial_images)
-                ground_tokens = get_patch_embeddings(dino, ground_images)
-                aerial_tokens = get_patch_embeddings(dino, aerial_images)
+                ground_tokens, aerial_tokens, attention = model(ground_images, aerial_images)            
 
                 # Visualize the final single-head attention layer
                 attention = attention.mean(dim=1)  # average across heads only
 
                 # Calculate the number of patches for ground and aerial images
-                patch_size = model.patch_embed.proj.kernel_size[0]
-                num_patches_ground = (ground_images.shape[-1] // patch_size) * (ground_images.shape[-2] // patch_size)
-                num_patches_aerial = (aerial_images.shape[-1] // patch_size) * (aerial_images.shape[-2] // patch_size)
+                num_patches_ground = (ground_images.shape[-1] // model.patch_size) * (ground_images.shape[-2] // model.patch_size)
+                num_patches_aerial = (aerial_images.shape[-1] // model.patch_size) * (aerial_images.shape[-2] // model.patch_size)
 
-                # Crop the Attention - MAGIC TRICK
-                attention = attention[:, :num_patches_ground + num_patches_aerial, :num_patches_ground + num_patches_aerial]
+                # Remove the first row and column
+                attention = attention[:, 1:, 1:]
 
-                # Assuming batch size of 1 for simplicity
-                cross_attention_A2G = attention[:, :num_patches_ground, num_patches_ground:]
+                # Remove the row and column corresponding to 1+num_patches_ground
+                attention = torch.cat((attention[:, :num_patches_ground-1, :], attention[:, num_patches_ground:, :]), dim=1)
+                attention = torch.cat((attention[:, :, :num_patches_ground-1], attention[:, :, num_patches_ground:]), dim=2)
+
+                # Get the Cross Attentions
+                cross_attention_A2G = attention[:, :num_patches_ground, num_patches_ground:]    # OCCHIO QUA
                 cross_attention_G2A = attention[:, num_patches_ground:, :num_patches_ground]
 
                 # Reconstruct the images from the tokens
@@ -177,7 +173,6 @@ if __name__ == '__main__':
     repo_name="facebookresearch/dinov2"
     model_name="dinov2_vitb14"
     model = CroDINO(repo_name, model_name, pretrained=True).to(device)
-    dino = torch.hub.load(repo_name, model_name).to(device).eval()
     print(model)
 
 
@@ -187,7 +182,8 @@ if __name__ == '__main__':
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     # Loss function
-    criterion = nn.MSELoss()
+    # criterion = nn.MSELoss()
+    criterion = CosineSimilarityLoss()
 
     # Transformations
     transform_ground = transforms.Compose([
@@ -216,4 +212,4 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
 
     # Train the model
-    train(model, dino, train_loader, val_loader, device, criterion, optimizer, epochs=args.epochs, save_path=args.save_path)
+    train(model, train_loader, val_loader, device, criterion, optimizer, epochs=args.epochs, save_path=args.save_path)

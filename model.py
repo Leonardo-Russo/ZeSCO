@@ -16,6 +16,7 @@ import os
 import random
 from utils import *
 import torch.nn.functional as F
+import math
 
 import warnings
 warnings.simplefilter("ignore", category=UserWarning)
@@ -45,27 +46,28 @@ class SingleHeadAttention(nn.Module):
 class CroDINO(nn.Module):
     def __init__(self, repo_name="facebookresearch/dinov2", model_name="dinov2_vitb14", pretrained=True):
         super(CroDINO, self).__init__()
+
         self.original_model = torch.hub.load(repo_name, model_name)
-        
+
+        self.patch_size = self.original_model.patch_size
+        self.interpolate_offset = self.original_model.interpolate_offset
+        self.interpolate_antialias = self.original_model.interpolate_antialias
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.original_model.to(self.device)
+
         self.patch_embed = self.original_model.patch_embed
         self.blocks = self.original_model.blocks
         self.norm = self.original_model.norm
         self.head = self.original_model.head
-        self.cls_token = self.original_model.cls_token
-        
+        self.cls_token = self.original_model.cls_token.clone()
+        self.pos_embed_1 = self.original_model.pos_embed.clone()
+        self.pos_embed_2 = self.original_model.pos_embed.clone()
+
         # Final single-head attention layer
         embed_dim = self.original_model.patch_embed.proj.out_channels
         self.final_attention = SingleHeadAttention(embed_dim)
 
-        # Positional Encoding
-        # self.pos_embed_1 = nn.Parameter(self.original_model.pos_embed)  # use the original positional embedding and adjust dynamically
-        # self.pos_embed_2 = nn.Parameter(self.original_model.pos_embed)  # use the original positional embedding and adjust dynamically
-        # self.pos_embed_1 = self.original_model.pos_embed.copy()
-        # self.pos_embed_2 = self.original_model.pos_embed.copy()
-        self.pos_embed_1 = self.original_model.pos_embed
-        self.pos_embed_2 = self.original_model.pos_embed
-
-        # Freeze parameters if pretrained is True
+        # Freeze parameters if pretrained
         if pretrained:
             for param in self.patch_embed.parameters():
                 param.requires_grad = False
@@ -76,31 +78,28 @@ class CroDINO(nn.Module):
             for param in self.head.parameters():
                 param.requires_grad = False
 
-    def forward(self, x1, x2, return_attention=False):
-        # x1_patches = self.patch_embed(x1)
-        # x2_patches = self.patch_embed(x2)
-        
-        # # Compute positional encodings dynamically
-        # num_patches_x1 = x1_patches.size(1)
-        # num_patches_x2 = x2_patches.size(1)
-        # print("x1 shape: ", x1_patches.shape)
-        # print("x2 shape: ", x2_patches.shape)
+    def forward(self, x1, x2, debug=False):
 
-        # # Interpolate positional embeddings to match the number of patches
-        # pos_embed_x1 = self.original_model.prepare_tokens_with_masks(x1)
-        # pos_embed_x2 = self.original_model.prepare_tokens_with_masks(x2)
-        # print("pos_embed_x1 shape: ", pos_embed_x1.shape)
-        # print("pos_embed_x2 shape: ", pos_embed_x2.shape)
+        # Original Model Processing
+        self.original_model.eval()
+        # x1_dino = self.original_model.patch_embed(x1)
+        # x2_dino = self.original_model.patch_embed(x2)
+        # x1_patches = torch.cat((self.original_model.cls_token.expand(x1_patches.shape[0], -1, -1), x1_patches), dim=1)
+        # x2_patches = torch.cat((self.original_model.cls_token.expand(x2_patches.shape[0], -1, -1), x2_patches), dim=1)
+        out_dino_1 = self.original_model.forward_features(x1)
+        out_dino_2 = self.original_model.forward_features(x2)
+        x1_dino = out_dino_1["x_norm_patchtokens"]
+        x2_dino = out_dino_2["x_norm_patchtokens"]        
         
-        # # Concatenate tokens from both images
-        # x_patches = torch.cat((x1_patches, x2_patches), dim=1)
-        
-        # # Add positional encoding
-        # pos_embed = torch.cat((pos_embed_x1, pos_embed_x2), dim=1)
-        # x = x_patches + pos_embed
+        if debug:
+            print("x1_img shape: ", x1.shape)
+            print("x2_img shape: ", x2.shape)
+            print("x1_dino shape: ", x1_dino.shape)
+            print("x2_dino shape: ", x2_dino.shape)
 
-        x1 = self.original_model.prepare_tokens_with_masks(x1)
-        x2 = self.original_model.prepare_tokens_with_masks(x2)
+        # CroDINO Processing
+        x1 = self.prepare_tokens(x1, img_cls=1, debug=True)
+        x2 = self.prepare_tokens(x2, img_cls=2)
         x = torch.cat((x1, x2), dim=1)
         
         # Process through transformer blocks
@@ -108,30 +107,103 @@ class CroDINO(nn.Module):
             x = blk(x)
         
         # Final single-head attention
-        _, final_attn = self.final_attention(x)         # NOTE: I'm computing the attention without affecting the patches           
+        _, final_attn = self.final_attention(x)         # NOTE: I'm computing the attention without affecting the patches 
+
+        # TODO: instead of computing the total attention, find the cross attention directly
+
+        # remove first elements of x1 and x2 -> find their indices
         
         x = self.norm(x)
         x = self.head(x)
         
-        if return_attention:
-            return x, final_attn
+        return x1_dino, x2_dino, final_attn
+    
+
+    def interpolate_pos_encoding(self, x, img_cls, w, h):
+
+        if img_cls == 1:
+            previous_dtype = x.dtype
+            npatch = x.shape[1] - 1
+            N = self.pos_embed_1.shape[1] - 1
+            if npatch == N and w == h:
+                return self.pos_embed_1
+            pos_embed = self.pos_embed_1.float()
+            class_pos_embed = pos_embed[:, 0]
+            patch_pos_embed = pos_embed[:, 1:]
+            dim = x.shape[-1]
+            w0 = w // self.patch_size
+            h0 = h // self.patch_size
+            M = int(math.sqrt(N))  # Recover the number of patches in each dimension
+            assert N == M * M
+            kwargs = {}
+            if self.interpolate_offset:
+                # Historical kludge: add a small number to avoid floating point error in the interpolation, see https://github.com/facebookresearch/dino/issues/8
+                # Note: still needed for backward-compatibility, the underlying operators are using both output size and scale factors
+                sx = float(w0 + self.interpolate_offset) / M
+                sy = float(h0 + self.interpolate_offset) / M
+                kwargs["scale_factor"] = (sx, sy)
+            else:
+                # Simply specify an output size instead of a scale factor
+                kwargs["size"] = (w0, h0)
+            patch_pos_embed = nn.functional.interpolate(
+                patch_pos_embed.reshape(1, M, M, dim).permute(0, 3, 1, 2),
+                mode="bicubic",
+                antialias=self.interpolate_antialias,
+                **kwargs,
+            )
+            assert (w0, h0) == patch_pos_embed.shape[-2:]
+            patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
+            return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
+        
+        elif img_cls == 2:
+            previous_dtype = x.dtype
+            npatch = x.shape[1] - 1
+            N = self.pos_embed_2.shape[1] - 1
+            if npatch == N and w == h:
+                return self.pos_embed_2
+            pos_embed = self.pos_embed_2.float()
+            class_pos_embed = pos_embed[:, 0]
+            patch_pos_embed = pos_embed[:, 1:]
+            dim = x.shape[-1]
+            w0 = w // self.patch_size
+            h0 = h // self.patch_size
+            M = int(math.sqrt(N))  # Recover the number of patches in each dimension
+            assert N == M * M
+            kwargs = {}
+            if self.interpolate_offset:
+                # Historical kludge: add a small number to avoid floating point error in the interpolation, see https://github.com/facebookresearch/dino/issues/8
+                # Note: still needed for backward-compatibility, the underlying operators are using both output size and scale factors
+                sx = float(w0 + self.interpolate_offset) / M
+                sy = float(h0 + self.interpolate_offset) / M
+                kwargs["scale_factor"] = (sx, sy)
+            else:
+                # Simply specify an output size instead of a scale factor
+                kwargs["size"] = (w0, h0)
+            patch_pos_embed = nn.functional.interpolate(
+                patch_pos_embed.reshape(1, M, M, dim).permute(0, 3, 1, 2),
+                mode="bicubic",
+                antialias=self.interpolate_antialias,
+                **kwargs,
+            )
+            assert (w0, h0) == patch_pos_embed.shape[-2:]
+            patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
+            return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
+        
         else:
-            return x
+            return sys.exit("Invalid image class")
         
     
-    # def interpolate_pos_embed(self, pos_embed, num_patches):
-    #     """Interpolate positional embeddings to match the number of patches."""
-    #     original_num_patches = pos_embed.size(1)
-    #     if num_patches != original_num_patches:
-    #         # Calculate scaling factors for each dimension
-    #         scale_h = float(num_patches) / float(original_num_patches)
-    #         scale_w = 1.0  # Keep the width unchanged
-    #         # Calculate new positional embedding size
-    #         new_pos_embed_size = (int(scale_h * pos_embed.shape[1] + 0.5), int(scale_w * pos_embed.shape[2]))
-    #         # Interpolate the positional embedding tensor
-    #         pos_embed = F.interpolate(pos_embed.unsqueeze(0), size=new_pos_embed_size, mode='bicubic', align_corners=False)
-    #         pos_embed = pos_embed.squeeze(0)
-    #     return pos_embed
+    def prepare_tokens(self, x, img_cls, debug=False):
+        B, nc, w, h = x.shape
+        x = self.patch_embed(x)
+
+        # I need to use one cls for each modality
+        self.cls_token = self.cls_token.to(self.device)
+        x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1)
+        
+        x = x + self.interpolate_pos_encoding(x, img_cls, w, h).to(self.device)
+
+        return x
 
         
 
@@ -142,7 +214,7 @@ def get_patch_embeddings(model, x):
     x = model.norm(x)
     return x
 
-
+# reg
 class Dinov2Matcher:
     def __init__(self, repo_name="facebookresearch/dinov2", model_name="dinov2_vitb14", smaller_edge_size=448, half_precision=False, device="cuda"):
         self.repo_name = repo_name
@@ -243,3 +315,15 @@ class Dinov2Matcher:
         rgbimg1 = rgbimg1.reshape((*grid_size1, -1))
         rgbimg2 = rgbimg2.reshape((*grid_size2, -1))
         return rgbimg1,rgbimg2
+
+
+class CosineSimilarityLoss(nn.Module):
+    def __init__(self):
+        super(CosineSimilarityLoss, self).__init__()
+
+    def forward(self, x1, x2):
+        x1_flat = x1.view(x1.size(0), -1)           # flatten the last two dimensions
+        x2_flat = x2.view(x2.size(0), -1)
+        cos_sim = F.cosine_similarity(x1_flat, x2_flat, dim=-1)         # compute cosine similarity        
+        loss = 1 - cos_sim.mean()                                       # convert similarity to loss
+        return loss
