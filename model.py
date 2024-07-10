@@ -59,7 +59,8 @@ class CroDINO(nn.Module):
         self.blocks = self.original_model.blocks
         self.norm = self.original_model.norm
         self.head = self.original_model.head
-        self.cls_token = self.original_model.cls_token.clone()
+        self.cls_token_1 = self.original_model.cls_token.clone()
+        self.cls_token_2 = self.original_model.cls_token.clone()
         self.pos_embed_1 = self.original_model.pos_embed.clone()
         self.pos_embed_2 = self.original_model.pos_embed.clone()
 
@@ -80,16 +81,31 @@ class CroDINO(nn.Module):
 
     def forward(self, x1, x2, debug=False):
 
-        # Original Model Processing
+        # -- Original Model Processing --- #
         self.original_model.eval()
         # x1_dino = self.original_model.patch_embed(x1)
         # x2_dino = self.original_model.patch_embed(x2)
         # x1_patches = torch.cat((self.original_model.cls_token.expand(x1_patches.shape[0], -1, -1), x1_patches), dim=1)
         # x2_patches = torch.cat((self.original_model.cls_token.expand(x2_patches.shape[0], -1, -1), x2_patches), dim=1)
-        out_dino_1 = self.original_model.forward_features(x1)
-        out_dino_2 = self.original_model.forward_features(x2)
-        x1_dino = out_dino_1["x_norm_patchtokens"]
-        x2_dino = out_dino_2["x_norm_patchtokens"]        
+        # out_dino_1 = self.original_model.forward_features(x1)
+        # out_dino_2 = self.original_model.forward_features(x2)
+        # x1_dino = out_dino_1["x_norm_patchtokens"]
+        # x2_dino = out_dino_2["x_norm_patchtokens"]        
+
+
+        x1_dino = self.prepare_tokens(x1, img_cls=1)
+        x2_dino = self.prepare_tokens(x2, img_cls=2)
+
+        for blk in self.blocks:
+            x1_dino = blk(x1_dino)
+            x2_dino = blk(x2_dino)
+
+        x1_dino = self.norm(x1_dino)
+        x2_dino = self.norm(x2_dino)
+
+        x1_dino = x1_dino[:, 1:, :]
+        x2_dino = x2_dino[:, 1:, :]
+
         
         if debug:
             print("x1_img shape: ", x1.shape)
@@ -108,10 +124,6 @@ class CroDINO(nn.Module):
         
         # Final single-head attention
         _, final_attn = self.final_attention(x)         # NOTE: I'm computing the attention without affecting the patches 
-
-        # TODO: instead of computing the total attention, find the cross attention directly
-
-        # remove first elements of x1 and x2 -> find their indices
         
         x = self.norm(x)
         x = self.head(x)
@@ -197,9 +209,10 @@ class CroDINO(nn.Module):
         B, nc, w, h = x.shape
         x = self.patch_embed(x)
 
-        # I need to use one cls for each modality
-        self.cls_token = self.cls_token.to(self.device)
-        x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1)
+        if img_cls == 1:
+            x = torch.cat((self.cls_token_1.to(self.device).expand(x.shape[0], -1, -1), x), dim=1)
+        elif img_cls == 2:
+            x = torch.cat((self.cls_token_2.to(self.device).expand(x.shape[0], -1, -1), x), dim=1)
         
         x = x + self.interpolate_pos_encoding(x, img_cls, w, h).to(self.device)
 
@@ -216,10 +229,9 @@ def get_patch_embeddings(model, x):
 
 # reg
 class Dinov2Matcher:
-    def __init__(self, repo_name="facebookresearch/dinov2", model_name="dinov2_vitb14", smaller_edge_size=448, half_precision=False, device="cuda"):
+    def __init__(self, repo_name="facebookresearch/dinov2", model_name="dinov2_vitb14", half_precision=False, device="cuda"):
         self.repo_name = repo_name
         self.model_name = model_name
-        self.smaller_edge_size = smaller_edge_size
         self.half_precision = half_precision
         self.device = device
 
@@ -231,7 +243,7 @@ class Dinov2Matcher:
         self.model.eval()
 
         self.transform = transforms.Compose([
-            transforms.Resize(size=smaller_edge_size, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.Resize(size=(224, 224), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
             transforms.ToTensor(),
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # imagenet defaults
         ])
@@ -240,6 +252,7 @@ class Dinov2Matcher:
         image = Image.fromarray(rgb_image_numpy)
         image_tensor = self.transform(image)
         resize_scale = image.width / image_tensor.shape[2]
+        # resize_scale = 1.0
 
         height, width = image_tensor.shape[1:] # C x H x W
         cropped_width, cropped_height = width - width % self.model.patch_size, height - height % self.model.patch_size # crop a bit from right and bottom parts
@@ -247,13 +260,6 @@ class Dinov2Matcher:
 
         grid_size = (cropped_height // self.model.patch_size, cropped_width // self.model.patch_size)
         return image_tensor, grid_size, resize_scale
-
-    def prepare_mask(self, mask_image_numpy, grid_size, resize_scale):
-        cropped_mask_image_numpy = mask_image_numpy[:int(grid_size[0]*self.model.patch_size*resize_scale), :int(grid_size[1]*self.model.patch_size*resize_scale)]
-        image = Image.fromarray(cropped_mask_image_numpy)
-        resized_mask = image.resize((grid_size[1], grid_size[0]), resample=Image.Resampling.NEAREST)
-        resized_mask = np.asarray(resized_mask).flatten()
-        return resized_mask
 
     def extract_features(self, image_tensor):
         with torch.inference_mode():
@@ -270,51 +276,72 @@ class Dinov2Matcher:
         col = (idx % grid_size[1])*self.model.patch_size*resize_scale + self.model.patch_size / 2
         return row, col
 
-    def get_embedding_visualization(self, tokens, grid_size, resized_mask=None):
+    def get_embedding_visualization(self, tokens, grid_size):
         pca = PCA(n_components=3)
-        if resized_mask is not None:
-            tokens = tokens[resized_mask]
         reduced_tokens = pca.fit_transform(tokens.astype(np.float32))
-        if resized_mask is not None:
-            tmp_tokens = np.zeros((*resized_mask.shape, 3), dtype=reduced_tokens.dtype)
-            tmp_tokens[resized_mask] = reduced_tokens
-            reduced_tokens = tmp_tokens
         reduced_tokens = reduced_tokens.reshape((*grid_size, -1))
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
         return normalized_tokens
 
-    def get_combined_embedding_visualization(self, tokens1, token2, grid_size1, grid_size2, mask1=None, mask2=None, random_state=20):
+    def get_combined_embedding_visualization(self, tokens1, tokens2, grid_size1, grid_size2, random_state=20):
         pca = PCA(n_components=3, random_state=random_state)
 
         token1_shape = tokens1.shape[0]
-        if mask1 is not None:
-            tokens1 = tokens1[mask1]
-        if mask2 is not None:
-            token2 = token2[mask2]
-        combinedtokens= np.concatenate((tokens1, token2), axis=0)
-        reduced_tokens = pca.fit_transform(combinedtokens.astype(np.float32))
-
-        if mask1 is not None and mask2 is not None:
-            resized_mask = np.concatenate((mask1, mask2), axis=0)
-            tmp_tokens = np.zeros((*resized_mask.shape, 3), dtype=reduced_tokens.dtype)
-            tmp_tokens[resized_mask] = reduced_tokens
-            reduced_tokens = tmp_tokens
-        elif mask1 is not None and mask2 is None:
-            return sys.exit("Either use both masks or none")
-        elif mask1 is None and mask2 is not None:
-            return sys.exit("Either use both masks or none")
+        combined_tokens = np.concatenate((tokens1, tokens2), axis=0)
+        reduced_tokens = pca.fit_transform(combined_tokens.astype(np.float32))
 
         print("tokens1.shape", tokens1.shape)
-        print("token2.shape", token2.shape)
+        print("tokens2.shape", tokens2.shape)
         print("reduced_tokens.shape", reduced_tokens.shape)
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
 
-        rgbimg1 = normalized_tokens[0:token1_shape,:]
-        rgbimg2 = normalized_tokens[token1_shape:,:]
+        rgbimg1 = normalized_tokens[0:token1_shape, :]
+        rgbimg2 = normalized_tokens[token1_shape:, :]
 
         rgbimg1 = rgbimg1.reshape((*grid_size1, -1))
         rgbimg2 = rgbimg2.reshape((*grid_size2, -1))
-        return rgbimg1,rgbimg2
+        return rgbimg1, rgbimg2
+    
+
+
+def get_combined_embedding_visualization_all(tokens1, tokens2, tokens3, tokens4, grid_size1, grid_size2, grid_size3, grid_size4, random_state=20, debug=False):
+        pca = PCA(n_components=3, random_state=random_state)
+
+        token1_shape = tokens1.shape[0]
+        token2_shape = tokens2.shape[0]
+        token3_shape = tokens3.shape[0]
+        token4_shape = tokens4.shape[0]
+
+        combined_tokens = np.concatenate((tokens1, tokens2, tokens3, tokens4), axis=0)
+        reduced_tokens = pca.fit_transform(combined_tokens.astype(np.float32))
+
+        if debug:
+            print("tokens_1.shape", tokens1.shape)
+            print("tokens_2.shape", tokens2.shape)
+            print("tokens_3.shape", tokens3.shape)
+            print("tokens_4.shape", tokens4.shape)
+            print("reduced_tokens.shape", reduced_tokens.shape)
+
+        normalized_tokens = (reduced_tokens - np.min(reduced_tokens)) / (np.max(reduced_tokens) - np.min(reduced_tokens))
+
+        rgbimg1 = normalized_tokens[0:token1_shape, :]
+        rgbimg2 = normalized_tokens[token1_shape:token1_shape+token2_shape, :]
+        rgbimg3 = normalized_tokens[token1_shape+token2_shape:token1_shape+token2_shape+token3_shape, :]
+        rgbimg4 = normalized_tokens[token1_shape+token2_shape+token3_shape:, :]
+
+        if debug:
+            print("rgbimg1 shape", rgbimg1.shape)
+            print("rgbimg2 shape", rgbimg2.shape)
+            print("rgbimg3 shape", rgbimg3.shape)
+            print("rgbimg4 shape", rgbimg4.shape)
+
+        rgbimg1 = rgbimg1.reshape((*grid_size1, -1))
+        rgbimg2 = rgbimg2.reshape((*grid_size2, -1))
+        rgbimg3 = rgbimg3.reshape((*grid_size3, -1))
+        rgbimg4 = rgbimg4.reshape((*grid_size4, -1))
+
+        return rgbimg1, rgbimg2, rgbimg3, rgbimg4
+
 
 
 class CosineSimilarityLoss(nn.Module):
@@ -322,8 +349,20 @@ class CosineSimilarityLoss(nn.Module):
         super(CosineSimilarityLoss, self).__init__()
 
     def forward(self, x1, x2):
-        x1_flat = x1.view(x1.size(0), -1)           # flatten the last two dimensions
-        x2_flat = x2.view(x2.size(0), -1)
-        cos_sim = F.cosine_similarity(x1_flat, x2_flat, dim=-1)         # compute cosine similarity        
+        # x1_flat = x1.view(x1.size(0), -1)           # flatten the last two dimensions
+        # x2_flat = x2.view(x2.size(0), -1)
+        cos_sim = F.cosine_similarity(x1, x2, dim=-1)         # compute cosine similarity        
         loss = 1 - cos_sim.mean()                                       # convert similarity to loss
+        # print("cos_sim shape: ", cos_sim.shape)
+        # print("loss: ", loss)
+
+        # 768 is the inner dimension -> output is 256 x 256
+
+
+        # normalize so that each token has norm 1
+        # then matrix multiplication for its self to be MxM
+        # I want all diagonal elements to eb 1 and non-diag to be 0
+
+        ## Implementation:
+        # compute cross-entropy loss for the matrixs
         return loss

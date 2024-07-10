@@ -172,7 +172,7 @@ if __name__ == '__main__':
     # Initialize the model
     repo_name="facebookresearch/dinov2"
     model_name="dinov2_vitb14"
-    model = CroDINO(repo_name, model_name, pretrained=True).to(device)
+    model = CroDINO(repo_name, model_name, pretrained=False).to(device)
     print(model)
 
 
@@ -203,7 +203,7 @@ if __name__ == '__main__':
 
     # Sample paired images
     dataset_path = '/home/lrusso/cvusa'
-    train_filenames, val_filenames = sample_paired_images(dataset_path, sample_percentage=0.01, split_ratio=0.8, groundtype='cutouts')
+    train_filenames, val_filenames = sample_paired_images(dataset_path, sample_percentage=0.5, split_ratio=0.8, groundtype='cutouts')
 
     # Instantiate the dataset and dataloader
     train_dataset = PairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground)
