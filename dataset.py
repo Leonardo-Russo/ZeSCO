@@ -83,11 +83,51 @@ def get_aerial_path(root_dir, lat, lon, zoom):
     return os.path.join(root_dir, f'{zoom}/{lat_bin}/{lon_bin}/{lat}_{lon}.jpg')
 
 
+def extract_cutout_from_360(image, fov=(90, 60), yaw=180, pitch=90, debug=True):
+    h, w = image.shape[:2]
+    print(f"Pano Shape: {h}x{w}")
+    x_center = (yaw / 360.0) * w
+    y_center = (pitch / 180.0) * h
+    fov_x = int((fov[0] / 360.0) * w)
+    fov_y = int((fov[1] / 180.0) * h)
+
+    print(f"Center coordinates: x={x_center}, y={y_center}")
+    print(f"FOV: {fov_x}x{fov_y}")
+    
+    x1 = int(x_center - fov_x / 2)
+    x2 = int(x_center + fov_x / 2)
+    y1 = int(y_center - fov_y / 2)
+    y2 = int(y_center + fov_y / 2)
+    
+    # Ensure coordinates are within image bounds
+    x1 = max(0, x1)
+    x2 = min(w, x2)
+    y1 = max(0, y1)
+    y2 = min(h, y2)
+    
+    print(f"Cutout coordinates: x1={x1}, x2={x2}, y1={y1}, y2={y2}, image shape: {image.shape}")
+    
+    cutout = image[y1:y2, x1:x2]
+    
+    if debug:
+        # Draw the rectangle on the original image
+        import matplotlib.patches as patches
+        fig, ax = plt.subplots(1, figsize=(10, 5))
+        ax.imshow(image)
+        rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=1, edgecolor='r', facecolor='none')
+        ax.add_patch(rect)
+        plt.title('Cutout Region')
+        plt.show()
+
+    return cutout
+
+
 class PairedImagesDataset(Dataset):
-    def __init__(self, filenames, transform_aerial=None, transform_ground=None):
+    def __init__(self, filenames, transform_aerial=None, transform_ground=None, cutout_from_pano=True):
         self.filenames = filenames
         self.transform_aerial = transform_aerial
         self.transform_ground = transform_ground
+        self.cutout_from_pano = cutout_from_pano
 
     def __len__(self):
         return len(self.filenames)
@@ -99,6 +139,12 @@ class PairedImagesDataset(Dataset):
         aerial_image = Image.open(aerial_img_path).convert('RGB')
 
         if self.transform_ground:
+            if self.cutout_from_pano:
+                # Convert PIL Image to NumPy array for the cutout extraction
+                ground_image_np = np.array(ground_image)
+                ground_image_np = extract_cutout_from_360(ground_image_np)  # Adjust yaw and pitch as necessary
+                # Convert back to PIL Image
+                ground_image = Image.fromarray(ground_image_np.astype('uint8'))
             ground_image = self.transform_ground(ground_image)
 
         if self.transform_aerial:
