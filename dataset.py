@@ -32,22 +32,21 @@ def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, g
     
     if groundtype == 'panos':
         ground_dir = os.path.join(dataset_path, 'streetview', 'panos')
-    elif groundtype == 'cutouts':
-        ground_dir = os.path.join(dataset_path, 'streetview', 'cutouts')
     else:   
         raise ValueError("Invalid groundtype. Choose either 'panos' or 'cutouts'.")
-    satellite_dir = os.path.join(dataset_path, 'streetview_aerial')
+    satellite_dir = os.path.join(dataset_path, 'bingmap')
 
     paired_filenames = []
     for root, _, files in os.walk(ground_dir):
         for file in files:
             if file.endswith('.jpg'):
                 ground_path = os.path.join(root, file)
-                lat, lon = get_metadata(ground_path)
-                if lat is None or lon is None:
+                image_id = os.path.splitext(file)[0]                
+                if image_id is None:
                     continue
-                zoom = 18  # Only consider zoom level 18
-                sat_path = get_aerial_path(satellite_dir, lat, lon, zoom)
+
+                zoom = 18  # Assuming zoom level 18
+                sat_path = os.path.join(satellite_dir, f'{zoom}/{image_id}.jpg')
                 if os.path.exists(sat_path):
                     paired_filenames.append((ground_path, sat_path))
     
@@ -62,37 +61,18 @@ def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, g
     return train_filenames, val_filenames
 
 
-def get_metadata(fname):
-    if 'streetview' in fname:
-        parts = fname[:-4].rsplit('/', 1)[1].split('_')
-        if len(parts) == 2:
-            lat, lon = parts
-            return lat, lon
-        elif len(parts) == 3:
-            lat, lon, orientation = parts
-            return lat, lon
-        else:
-            print(f"Unexpected filename format: {fname}")
-            return None, None
-    return None
-
-
-def get_aerial_path(root_dir, lat, lon, zoom):
-    lat_bin = int(float(lat))
-    lon_bin = int(float(lon))
-    return os.path.join(root_dir, f'{zoom}/{lat_bin}/{lon_bin}/{lat}_{lon}.jpg')
-
-
-def extract_cutout_from_360(image, fov=(90, 60), yaw=180, pitch=90, debug=True):
+def extract_cutout_from_360(image, fov=(90, 180), yaw=180, pitch=90, debug=False):
     h, w = image.shape[:2]
-    print(f"Pano Shape: {h}x{w}")
+    if debug:
+        print(f"Pano Shape: {h}x{w}")
     x_center = (yaw / 360.0) * w
     y_center = (pitch / 180.0) * h
     fov_x = int((fov[0] / 360.0) * w)
     fov_y = int((fov[1] / 180.0) * h)
 
-    print(f"Center coordinates: x={x_center}, y={y_center}")
-    print(f"FOV: {fov_x}x{fov_y}")
+    if debug:
+        print(f"Center coordinates: x={x_center}, y={y_center}")
+        print(f"FOV: {fov_x}x{fov_y}")
     
     x1 = int(x_center - fov_x / 2)
     x2 = int(x_center + fov_x / 2)
@@ -105,7 +85,8 @@ def extract_cutout_from_360(image, fov=(90, 60), yaw=180, pitch=90, debug=True):
     y1 = max(0, y1)
     y2 = min(h, y2)
     
-    print(f"Cutout coordinates: x1={x1}, x2={x2}, y1={y1}, y2={y2}, image shape: {image.shape}")
+    if debug:
+        print(f"Cutout coordinates: x1={x1}, x2={x2}, y1={y1}, y2={y2}, image shape: {image.shape}")
     
     cutout = image[y1:y2, x1:x2]
     
@@ -132,25 +113,28 @@ class PairedImagesDataset(Dataset):
     def __len__(self):
         return len(self.filenames)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx, debug=False):
         ground_img_path, aerial_img_path = self.filenames[idx]
 
         ground_image = Image.open(ground_img_path).convert('RGB')
         aerial_image = Image.open(aerial_img_path).convert('RGB')
 
+        # Choose Cropping Parameters
+        fov = (90, 180)                 # default FOV
+        yaw = random.randint(0, 360)    # random yaw between 0 and 360 degrees
+        pitch = 90                      # fixed pitch at 90 degrees
+
         if self.transform_ground:
             if self.cutout_from_pano:
-                # Convert PIL Image to NumPy array for the cutout extraction
-                ground_image_np = np.array(ground_image)
-                ground_image_np = extract_cutout_from_360(ground_image_np)  # Adjust yaw and pitch as necessary
-                # Convert back to PIL Image
-                ground_image = Image.fromarray(ground_image_np.astype('uint8'))
+                ground_image_np = np.array(ground_image)                            # Convert PIL Image to NumPy array for the cutout extraction
+                ground_image_np = extract_cutout_from_360(ground_image_np, fov, yaw, pitch, debug)
+                ground_image = Image.fromarray(ground_image_np.astype('uint8'))     # Convert back to PIL Image
             ground_image = self.transform_ground(ground_image)
 
         if self.transform_aerial:
             aerial_image = self.transform_aerial(aerial_image)
 
-        return ground_image, aerial_image
+        return ground_image, aerial_image, fov, yaw, pitch
     
 
 def get_patch_embeddings(model, x):
