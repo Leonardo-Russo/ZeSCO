@@ -176,12 +176,33 @@ def find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, 
                 print(f"Min Distance: {min_distance:.4f} \tBest Orientation: {best_orientation}°")
         distances.append(cone_distance)
 
+    # Compute Combined Alignment
+    num_angles = len(distances)
+    combined_distances = []
+
+    # Sum opposite directions' distances
+    for i in range(num_angles // 2):
+        combined_distance = distances[i] + distances[(i + num_angles // 2) % num_angles]
+        combined_distances.append(combined_distance)
+
+    # Find the line with the least combined distance
+    min_combined_distance = min(combined_distances)
+    min_combined_index = combined_distances.index(min_combined_distance)
+
+    # Compare the two possible directions on that line and select the best one
+    if distances[min_combined_index] < distances[(min_combined_index + num_angles // 2) % num_angles]:
+        best_combined_orientation = min_combined_index * angle_step
+        combined_min_distance = distances[min_combined_index]
+    else:
+        best_combined_orientation = (min_combined_index + num_angles // 2) * angle_step
+        combined_min_distance = distances[(min_combined_index + num_angles // 2) % num_angles]
+
     # Compute confidence
     mean_distance = np.mean(distances)
     std_distance = np.std(distances)
     confidence = (mean_distance - min_distance) / std_distance  # Z-score
 
-    return best_orientation, distances, min_distance, confidence
+    return best_orientation, distances, min_distance, confidence, best_combined_orientation, combined_min_distance
 
 
 def test(model, data_loader, device, savepath='results', debug=False):
@@ -195,6 +216,7 @@ def test(model, data_loader, device, savepath='results', debug=False):
     sky_filter = SkyFilter()
 
     delta_yaws = []
+    delta_yaws_combined = []
 
     for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in tqdm(enumerate(data_loader), total=len(data_loader), desc="Processing Batches"):
         ground_images = ground_images.to(device)
@@ -294,10 +316,12 @@ def test(model, data_loader, device, savepath='results', debug=False):
                 print("averaged_radial_tokens.shape:", averaged_radial_tokens.shape)   
 
             # Find the best alignment
-            best_orientation, distances, min_distance, confidence = find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, fov_x)
+            best_orientation, distances, min_distance, confidence, best_combined_orientation, combined_min_distance = find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, fov_x)
 
             delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
+            delta_yaw_combined = np.abs(((90 - (yaw - 180)) - best_combined_orientation + 180) % 360 - 180)
             delta_yaws.append(delta_yaw)
+            delta_yaws_combined.append(delta_yaw_combined)
 
             fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
 
@@ -310,9 +334,12 @@ def test(model, data_loader, device, savepath='results', debug=False):
             center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
             end_x = int(center[0] + radius * np.cos(np.deg2rad(best_orientation)))
             end_y = int(center[1] - radius * np.sin(np.deg2rad(best_orientation)))
+            end_x_combined = int(center[0] + radius * np.cos(np.deg2rad(best_combined_orientation)))
+            end_y_combined = int(center[1] - radius * np.sin(np.deg2rad(best_combined_orientation)))
             end_x_GT = int(center[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
             end_y_GT = int(center[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
             line_pred = ax2.plot([center[0], end_x], [center[1], end_y], color='red', linestyle='--', label='Prediction')
+            line_pred_combined = ax2.plot([center[0], end_x_combined], [center[1], end_y_combined], color='blue', linestyle='--', label='Combined Prediction')
             line_gt = ax2.plot([center[0], end_x_GT], [center[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
 
             ax2.set_title("Aerial Image Orientation - Delta: {:.4f}°".format(delta_yaw))
