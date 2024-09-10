@@ -24,6 +24,77 @@ from skyfilter import SkyFilter
 import matplotlib
 matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
 
+from transformers import pipeline
+
+def apply_depth_estimation(model, image, device, debug=False):
+    """
+    Applies depth estimation to the image, splitting tokens into foreground, middleground, and background.
+    Parameters:
+    - image: The image to be processed for depth estimation.
+    - device: The device ("cuda" or "cpu") to run the model on.
+    - debug: Optional parameter to enable visualization of intermediate steps. Default is False.
+    Returns:
+    - depth_map: The estimated depth map for the image.
+    - foreground: The mask indicating the foreground regions.
+    - middleground: The mask indicating the middleground regions.
+    - background: The mask indicating the background regions.
+    """
+
+    # https://huggingface.co/docs/transformers/en/tasks/monocular_depth_estimation
+
+    predictions = model(image)
+    depth_map = predictions["depth"]
+
+    # # Load the depth estimation model and processor
+    # checkpoint = "Intel/dpt-hybrid-midas"  # Example checkpoint, adjust if necessary
+    # image_processor = AutoImageProcessor.from_pretrained(checkpoint)
+    # model = AutoModelForDepthEstimation.from_pretrained(checkpoint).to(device)
+
+    # # Prepare the image for the model
+    # inputs = image_processor(images=image, return_tensors="pt").to(device)
+
+    # # Perform depth estimation
+    # with torch.no_grad():
+    #     outputs = model(**inputs)
+
+    # # Post-process the depth map
+    # depth_map = outputs.predicted_depth
+
+    # Define depth thresholds for foreground, middleground, and background
+    # You may need to adjust these thresholds based on your specific dataset and requirements
+    max_depth = torch.max(depth_map)
+    min_depth = torch.min(depth_map)
+    threshold1 = min_depth + (max_depth - min_depth) / 3 
+    threshold2 = min_depth + 2 * (max_depth - min_depth) / 3
+
+    # Create masks for foreground, middleground, and background
+    foreground = depth_map <= threshold1
+    middleground = (depth_map > threshold1) & (depth_map <= threshold2)
+    background = depth_map > threshold2
+
+    # Visualize the depth map and masks if in debug mode
+    if debug:
+        plt.figure(figsize=(15, 5))
+        plt.subplot(141)
+        plt.imshow(image)
+        plt.title('Original Image')
+        plt.axis('off')
+        plt.subplot(142)
+        plt.imshow(depth_map.squeeze().cpu().numpy(), cmap='viridis')
+        plt.title('Depth Map')
+        plt.axis('off')
+        plt.subplot(143)
+        plt.imshow(foreground.squeeze().cpu().numpy(), cmap='gray')
+        plt.title('Foreground Mask')
+        plt.axis('off')
+        plt.subplot(144)
+        plt.imshow(background.squeeze().cpu().numpy(), cmap='gray')
+        plt.title('Background Mask')
+        plt.axis('off')
+        plt.show()
+
+    return depth_map, foreground, middleground, background
+
 
 def apply_sky_filter(sky_filter, ground_image_vis, grid_size, debug=False):
     """
@@ -213,7 +284,11 @@ def test(model, data_loader, device, savepath='results', debug=False):
         os.makedirs(results_dir)
 
     # Initialize the sky filter
-    sky_filter = SkyFilter()
+    sky_filter = SkyFilter() 
+
+    # Initialize the depth estimation model
+    checkpoint = "depth-anything/Depth-Anything-V2-base-hf"
+    depth_estimator = pipeline("depth-estimation", model=checkpoint, device=device)
 
     delta_yaws = []
     delta_yaws_combined = []
@@ -259,8 +334,11 @@ def test(model, data_loader, device, savepath='results', debug=False):
             ground_image_vis = ground_image_vis.astype(np.uint8)
             aerial_image_vis = aerial_image_vis.astype(np.uint8)
 
-
+            # Apply sky filter
             ground_image_no_sky, sky_mask, grid_mask = apply_sky_filter(sky_filter, ground_image_vis, grid_size=16, debug=False)
+
+            # Apply depth estimation
+            depth_map, foreground, middleground, background = apply_depth_estimation(depth_estimator, ground_image_no_sky, device, debug=True)
 
             # Normalize the features
             normalized_features1 = normalize(ground_tokens.squeeze().detach().cpu().numpy(), axis=1)
