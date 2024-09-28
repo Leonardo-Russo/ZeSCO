@@ -83,15 +83,6 @@ class CroDINO(nn.Module):
 
         # -- Original Model Processing --- #
         self.original_model.eval()
-        # x1_dino = self.original_model.patch_embed(x1)
-        # x2_dino = self.original_model.patch_embed(x2)
-        # x1_patches = torch.cat((self.original_model.cls_token.expand(x1_patches.shape[0], -1, -1), x1_patches), dim=1)
-        # x2_patches = torch.cat((self.original_model.cls_token.expand(x2_patches.shape[0], -1, -1), x2_patches), dim=1)
-        # out_dino_1 = self.original_model.forward_features(x1)
-        # out_dino_2 = self.original_model.forward_features(x2)
-        # x1_dino = out_dino_1["x_norm_patchtokens"]
-        # x2_dino = out_dino_2["x_norm_patchtokens"]        
-
 
         x1_dino = self.prepare_tokens(x1, img_cls=1)
         x2_dino = self.prepare_tokens(x2, img_cls=2)

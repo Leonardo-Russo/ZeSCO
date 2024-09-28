@@ -16,7 +16,6 @@ import os
 import random
 import argparse
 from tqdm import tqdm
-import math
 
 from dataset import PairedImagesDataset, sample_paired_images
 from model import CroDINO, Dinov2Matcher, CosineSimilarityLoss, get_combined_embedding_visualization_all
@@ -25,82 +24,76 @@ from skyfilter import SkyFilter
 import matplotlib
 matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
 
+from transformers import pipeline
 
-
-
-def calculate_misalignment(ground_image, aerial_image, debug=False):
+def apply_depth_estimation(model, image, device, debug=False):
     """
-    Calculates the misalignment between a ground image and an aerial image using ORB feature matching and homography estimation.
-    
+    Applies depth estimation to the image, splitting tokens into foreground, middleground, and background.
     Parameters:
-    - ground_image: The ground image (tensor)
-    - aerial_image: The aerial image (tensor)
-    - debug: If True, intermediate images and keypoints will be displayed
-
+    - image: The image to be processed for depth estimation.
+    - device: The device ("cuda" or "cpu") to run the model on.
+    - debug: Optional parameter to enable visualization of intermediate steps. Default is False.
     Returns:
-    - misalignment_angle: The estimated misalignment angle in degrees
+    - depth_map: The estimated depth map for the image.
+    - foreground: The mask indicating the foreground regions.
+    - middleground: The mask indicating the middleground regions.
+    - background: The mask indicating the background regions.
     """
 
-    # Convert tensors to numpy arrays and then to grayscale
-    img1_color = (ground_image.squeeze().permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
-    img2_color = (aerial_image.squeeze().permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
-    img1 = cv2.cvtColor(img1_color, cv2.COLOR_BGR2GRAY)
-    img2 = cv2.cvtColor(img2_color, cv2.COLOR_BGR2GRAY)
-    height, width = img2.shape
+    # https://huggingface.co/docs/transformers/en/tasks/monocular_depth_estimation
 
-    # Create ORB detector  
-    orb_detector = cv2.ORB_create(5000)
+    predictions = model(image)
+    depth_map = predictions["depth"]
 
-    # Find keypoints and descriptors
-    kp1, d1 = orb_detector.detectAndCompute(img1, None)
-    kp2, d2 = orb_detector.detectAndCompute(img2, None)  
+    # # Load the depth estimation model and processor
+    # checkpoint = "Intel/dpt-hybrid-midas"  # Example checkpoint, adjust if necessary
+    # image_processor = AutoImageProcessor.from_pretrained(checkpoint)
+    # model = AutoModelForDepthEstimation.from_pretrained(checkpoint).to(device)
 
+    # # Prepare the image for the model
+    # inputs = image_processor(images=image, return_tensors="pt").to(device)
 
+    # # Perform depth estimation
+    # with torch.no_grad():
+    #     outputs = model(**inputs)
+
+    # # Post-process the depth map
+    # depth_map = outputs.predicted_depth
+
+    # Define depth thresholds for foreground, middleground, and background
+    # You may need to adjust these thresholds based on your specific dataset and requirements
+    max_depth = torch.max(depth_map)
+    min_depth = torch.min(depth_map)
+    threshold1 = min_depth + (max_depth - min_depth) / 3 
+    threshold2 = min_depth + 2 * (max_depth - min_depth) / 3
+
+    # Create masks for foreground, middleground, and background
+    foreground = depth_map <= threshold1
+    middleground = (depth_map > threshold1) & (depth_map <= threshold2)
+    background = depth_map > threshold2
+
+    # Visualize the depth map and masks if in debug mode
     if debug:
-        # Display keypoints on the images 
-        img1_keypoints = cv2.drawKeypoints(img1, kp1, None, color=(0,255,0), flags=0)
-        img2_keypoints = cv2.drawKeypoints(img2, kp2, None, color=(0,255,0), flags=0)
-        cv2.imshow('Ground Image Keypoints', img1_keypoints)
-        cv2.imshow('Aerial Image Keypoints', img2_keypoints)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+        plt.figure(figsize=(15, 5))
+        plt.subplot(141)
+        plt.imshow(image)
+        plt.title('Original Image')
+        plt.axis('off')
+        plt.subplot(142)
+        plt.imshow(depth_map.squeeze().cpu().numpy(), cmap='viridis')
+        plt.title('Depth Map')
+        plt.axis('off')
+        plt.subplot(143)
+        plt.imshow(foreground.squeeze().cpu().numpy(), cmap='gray')
+        plt.title('Foreground Mask')
+        plt.axis('off')
+        plt.subplot(144)
+        plt.imshow(background.squeeze().cpu().numpy(), cmap='gray')
+        plt.title('Background Mask')
+        plt.axis('off')
+        plt.show()
 
-    # Match features
-    matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-    matches = matcher.match(d1, d2)
-
-    # Convert matches to a list
-    matches = list(matches) 
-    print(matches)
-    print("matches len: ", len(matches))
-
-    matches.sort(key=lambda x: x.distance)
-    matches = matches[:int(len(matches) * 0.9)]
-
-    # Extract matched keypoints
-    p1 = np.zeros((len(matches), 2))
-    p2 = np.zeros((len(matches), 2))
-    for i in range(len(matches)):
-        p1[i, :] = kp1[matches[i].queryIdx].pt
-        p2[i, :] = kp2[matches[i].trainIdx].pt  
-
-
-    # Find homography
-    homography, _ = cv2.findHomography(p1, p2, cv2.RANSAC)
-
-    u, _, vh = np.linalg.svd(homography[0:2, 0:2])
-    R = u @ vh
-    misalignment_angle = math.atan2(R[1,0], R[0,0])
-
-
-    if debug:
-        # Warp the ground image using the homography for visualization
-        transformed_img = cv2.warpPerspective(img1_color, homography, (width, height))
-        cv2.imshow('Transformed Ground Image', transformed_img)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-    return misalignment_angle
+    return depth_map, foreground, middleground, background
 
 
 def apply_sky_filter(sky_filter, ground_image_vis, grid_size, debug=False):
@@ -293,6 +286,10 @@ def test(model, data_loader, device, savepath='results', debug=False):
     # Initialize the sky filter
     sky_filter = SkyFilter() 
 
+    # Initialize the depth estimation model
+    checkpoint = "depth-anything/Depth-Anything-V2-base-hf"
+    depth_estimator = pipeline("depth-estimation", model=checkpoint, device=device)
+
     delta_yaws = []
     delta_yaws_combined = []
 
@@ -311,9 +308,6 @@ def test(model, data_loader, device, savepath='results', debug=False):
         for i in range(BATCH_SIZE):  # Iterate over batch size
             ground_image = ground_images[i:i+1]
             aerial_image = aerial_images[i:i+1]
-            misalignment = calculate_misalignment(ground_image, aerial_image)
-            print(f"Misalignment for image pair {i}: {misalignment} degrees")
-
             fov_x, fov_y = fovs
             fov = (fov_x[i].item(), fov_y[i].item())
             yaw = yaws[i].item()
@@ -342,6 +336,9 @@ def test(model, data_loader, device, savepath='results', debug=False):
 
             # Apply sky filter
             ground_image_no_sky, sky_mask, grid_mask = apply_sky_filter(sky_filter, ground_image_vis, grid_size=16, debug=False)
+
+            # Apply depth estimation
+            depth_map, foreground, middleground, background = apply_depth_estimation(depth_estimator, ground_image_no_sky, device, debug=True)
 
             # Normalize the features
             normalized_features1 = normalize(ground_tokens.squeeze().detach().cpu().numpy(), axis=1)
