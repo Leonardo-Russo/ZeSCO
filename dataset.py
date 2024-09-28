@@ -31,6 +31,7 @@ def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, g
     """
     
     if groundtype == 'panos':
+        print(groundtype)
         ground_dir = os.path.join(dataset_path, 'streetview', 'panos')
     else:   
         raise ValueError("Invalid groundtype. Choose either 'panos' or 'cutouts'.")
