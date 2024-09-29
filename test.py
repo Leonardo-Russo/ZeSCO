@@ -270,7 +270,7 @@ def find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, 
 
     return best_orientation, distances, min_distance, confidence
 
-def test(model, data_loader, device, savepath='results', debug=False):
+def test(model, data_loader, device, savepath='results', create_figs=False, debug=False):
 
     # Create results directory if it doesn't exist
     results_dir = savepath
@@ -336,9 +336,9 @@ def test(model, data_loader, device, savepath='results', debug=False):
 
             # Define depth weights
             depth_weights = np.zeros_like(depth_mask, dtype=float)
-            depth_weights[depth_mask == 0] = 1.0  # background
+            depth_weights[depth_mask == 0] = 2.0  # background
             depth_weights[depth_mask == 1] = 1.5  # middleground
-            depth_weights[depth_mask == 2] = 2.0  # foreground
+            depth_weights[depth_mask == 2] = 1.0  # foreground
 
             # Normalize the features
             normalized_features1 = normalize(ground_tokens.squeeze().detach().cpu().numpy(), axis=1)
@@ -400,63 +400,66 @@ def test(model, data_loader, device, savepath='results', debug=False):
             delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
             delta_yaws.append(delta_yaw)
 
-            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
+            if create_figs or debug:
 
-            ax1.imshow(ground_image_np)
-            ax1.set_title("Ground Image - Yaw: {:.1f}°".format(yaw))
-            ax1.axis('off')
+                fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
 
-            ax2.imshow(aerial_image_np)
-            radius = aerial_image_np.shape[0] // 2
-            center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-            end_x = int(center[0] + radius * np.cos(np.deg2rad(best_orientation)))
-            end_y = int(center[1] - radius * np.sin(np.deg2rad(best_orientation)))
-            end_x_GT = int(center[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
-            end_y_GT = int(center[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
-            line_pred = ax2.plot([center[0], end_x], [center[1], end_y], color='red', linestyle='--', label='Prediction')
-            line_gt = ax2.plot([center[0], end_x_GT], [center[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
+                ax1.imshow(ground_image_np)
+                ax1.set_title("Ground Image - Yaw: {:.1f}°".format(yaw))
+                ax1.axis('off')
 
-            ax2.set_title("Aerial Image Orientation - Delta: {:.4f}°".format(delta_yaw))
-            ax2.legend(loc='upper right')
-            ax2.axis('off')
+                ax2.imshow(aerial_image_np)
+                radius = aerial_image_np.shape[0] // 2
+                center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
+                end_x = int(center[0] + radius * np.cos(np.deg2rad(best_orientation)))
+                end_y = int(center[1] - radius * np.sin(np.deg2rad(best_orientation)))
+                end_x_GT = int(center[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
+                end_y_GT = int(center[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
+                line_pred = ax2.plot([center[0], end_x], [center[1], end_y], color='red', linestyle='--', label='Prediction')
+                line_gt = ax2.plot([center[0], end_x_GT], [center[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
 
-            ax3.plot(np.arange(0, 360, angle_step), distances)
-            ax3.set_title("Distance over Orientations - Confidence: {:.4f}".format(confidence))
-            ax3.grid(True)
-            ax3.set_xlabel('Orientation')
-            ax3.set_ylabel('Distance')
-            ax3.set_xlim(0, 360)
-            ax3.set_ylim(min(distances), max(distances))
+                ax2.set_title("Aerial Image Orientation - Delta: {:.4f}°".format(delta_yaw))
+                ax2.legend(loc='upper right')
+                ax2.axis('off')
 
-            ax4.imshow(aerial_image_np)
-            radius = aerial_image_np.shape[0] // 2
-            center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-            min_dist = min(distances)
-            max_dist = max(distances)
-            for j, beta in enumerate(np.arange(0, 360, angle_step)):
-                end_x = int(center[0] + radius * np.cos(np.deg2rad(beta)))
-                end_y = int(center[1] - radius * np.sin(np.deg2rad(beta)))
-                color = plt.cm.plasma((distances[j] - min_dist) / (max_dist - min_dist))  # Normalize distances for color map
-                ax4.plot([center[0], end_x], [center[1], end_y], color=color)
-            ax4.set_title("Aerial Image with Distances")
-            ax4.axis('off')
+                ax3.plot(np.arange(0, 360, angle_step), distances)
+                ax3.set_title("Distance over Orientations - Confidence: {:.4f}".format(confidence))
+                ax3.grid(True)
+                ax3.set_xlabel('Orientation')
+                ax3.set_ylabel('Distance')
+                ax3.set_xlim(0, 360)
+                ax3.set_ylim(min(distances), max(distances))
 
-            norm = plt.Normalize(min_dist, max_dist)
-            sm = plt.cm.ScalarMappable(cmap='plasma', norm=norm)
-            sm.set_array([])
-            cbar = plt.colorbar(sm, ax=ax4)
+                ax4.imshow(aerial_image_np)
+                radius = aerial_image_np.shape[0] // 2
+                center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
+                min_dist = min(distances)
+                max_dist = max(distances)
+                for j, beta in enumerate(np.arange(0, 360, angle_step)):
+                    end_x = int(center[0] + radius * np.cos(np.deg2rad(beta)))
+                    end_y = int(center[1] - radius * np.sin(np.deg2rad(beta)))
+                    color = plt.cm.plasma((distances[j] - min_dist) / (max_dist - min_dist))  # Normalize distances for color map
+                    ax4.plot([center[0], end_x], [center[1], end_y], color=color)
+                ax4.set_title("Aerial Image with Distances")
+                ax4.axis('off')
 
-            # Determine the next available file number
-            file_count = len([name for name in os.listdir(results_dir) if name.startswith("sample") and name.endswith(".png")])
-            file_path = os.path.join(results_dir, f"sample_{file_count}.png")
+                norm = plt.Normalize(min_dist, max_dist)
+                sm = plt.cm.ScalarMappable(cmap='plasma', norm=norm)
+                sm.set_array([])
+                cbar = plt.colorbar(sm, ax=ax4)
 
-            # Save the figure
-            plt.savefig(file_path, dpi=300, bbox_inches='tight')
+                # Determine the next available file number
+                file_count = len([name for name in os.listdir(results_dir) if name.startswith("sample") and name.endswith(".png")])
+                file_path = os.path.join(results_dir, f"sample_{file_count}.png")
 
-            if debug:
-                plt.show()
+                if create_figs:
+                    plt.savefig(file_path, dpi=300, bbox_inches='tight')
 
-            plt.close(fig)
+                if debug:
+                    plt.show()
+
+                if create_figs:
+                    plt.close(fig)
 
     # Output the delta_yaw errors
     delta_yaws = np.array(delta_yaws)
@@ -474,6 +477,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test CRODINO')
     parser.add_argument('--save_path', '-p', type=str, default='results', help='Path to save the model and results')
     parser.add_argument('--debug', '-d', type=str, default='False', help='Debug mode')
+    parser.add_argument('--create_figs', '-s', type=str, default='False', help='Create figures')
     args = parser.parse_args()
     
     # Sample paired images
@@ -511,4 +515,4 @@ if __name__ == '__main__':
     model_name="dinov2_vitb14"
     model = CroDINO(repo_name, model_name, pretrained=True).to(device)
 
-    test(model, data_loader, device, savepath=args.save_path, debug=args.debug.lower() == 'true')
+    test(model, data_loader, device, savepath=args.save_path, create_figs=args.create_figs.lower() == 'true', debug=args.debug.lower() == 'true')
