@@ -31,17 +31,19 @@ matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
 def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=False):
     """
     Applies depth estimation to the image, splitting tokens into foreground, middleground, and background.
+    Returns a depth mask that can be used for token weighting.
+    
     Parameters:
+    - model: The depth estimation model.
+    - image_processor: The processor for the depth estimation model.
     - image: The image to be processed for depth estimation.
-    - device: The device ("cuda" or "cpu") to run the model on.
-    - debug: Optional parameter to enable visualization of intermediate steps. Default is False.
+    - grid_size: The size of the token grid (default is 16).
+    - debug: Enable visualization of intermediate steps (default is False).
+
     Returns:
     - depth_map: The estimated depth map for the image.
-    - foreground: The mask indicating the foreground regions.
-    - middleground: The mask indicating the middleground regions.
-    - background: The mask indicating the background regions.
+    - depth_mask: The mask labeling foreground, middleground, and background.
     """
-
     # Prepare image for the model
     inputs = image_processor(images=image, return_tensors="pt")
 
@@ -78,79 +80,44 @@ def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=Fa
     cell_height = height // grid_size
     cell_width = width // grid_size
 
-    # Initialize the grid mask
-    foreground_mask = np.zeros((grid_size, grid_size), dtype=np.uint8)
-    middleground_mask = np.zeros((grid_size, grid_size), dtype=np.uint8)
-    background_mask = np.zeros((grid_size, grid_size), dtype=np.uint8)
+    # Create a combined depth mask (0: background, 1: middleground, 2: foreground)
+    depth_mask = np.zeros_like(depth_map, dtype=np.uint8)
+    depth_mask[foreground] = 2
+    depth_mask[middleground] = 1
+    depth_mask[background] = 0
 
-    # Loop over each cell in the grid
+    # Convert depth map into grid format
+    depth_mask_grid = np.zeros((grid_size, grid_size), dtype=np.uint8)
     for i in range(grid_size):
         for j in range(grid_size):
-            # Define the region of interest (ROI) for this cell
             start_x = j * cell_width
             start_y = i * cell_height
             end_x = (j + 1) * cell_width if j < grid_size - 1 else width
             end_y = (i + 1) * cell_height if i < grid_size - 1 else height
             
-            # Extract the cell from the respective masks
-            foreground_cell = foreground[start_y:end_y, start_x:end_x]
-            middleground_cell = middleground[start_y:end_y, start_x:end_x]
-            background_cell = background[start_y:end_y, start_x:end_x]
-
-            # Check for empty cells and handle NaN values
-            fg_mean = np.mean(foreground_cell) if foreground_cell.size > 0 else 0
-            mg_mean = np.mean(middleground_cell) if middleground_cell.size > 0 else 0
-            bg_mean = np.mean(background_cell) if background_cell.size > 0 else 0
-            
-            if debug:
-                print(f"Foreground Cell: {fg_mean:.2f} \tMiddleground Cell: {mg_mean:.2f} \tBackground Cell: {bg_mean:.2f}")
-
-            # Apply majority voting for masks
-            foreground_mask[i, j] = 1 if fg_mean > 0.5 else 0
-            middleground_mask[i, j] = 1 if mg_mean > 0.5 else 0
-            background_mask[i, j] = 1 if bg_mean > 0.5 else 0
-
-
+            # Assign the most frequent depth class in the cell
+            cell_depth = depth_mask[start_y:end_y, start_x:end_x]
+            depth_mask_grid[i, j] = np.bincount(cell_depth.flatten()).argmax()
 
     # Visualize the depth map and masks if in debug mode
     if debug:
-        plt.figure(figsize=(18, 18))
-        plt.subplot(221)
+        plt.figure(figsize=(18, 8))
+        plt.subplot(131)
+        plt.imshow(image)
+        plt.title('Original Image')
+        plt.axis('off')
+        plt.subplot(132)
         plt.imshow(depth_map, cmap='plasma')
-        plt.colorbar(label='Depth Normalized')
+        plt.colorbar()
         plt.title('Depth Map')
         plt.axis('off')
-        plt.subplot(222)
-        plt.imshow(foreground, cmap='gray')
-        plt.title('Foreground Mask')
-        plt.axis('off')
-        plt.subplot(223)
-        plt.imshow(middleground, cmap='gray')
-        plt.title('Middleground Mask')
-        plt.axis('off')
-        plt.subplot(224)
-        plt.imshow(background, cmap='gray')
-        plt.title('Background Mask')
+        plt.subplot(133)
+        plt.imshow(depth_mask_grid, cmap='gray')
+        plt.title('Depth Mask')
         plt.axis('off')
         plt.show()
 
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 18))
-        ax1.imshow(image)
-        ax1.set_title("Original Image")
-        ax1.axis('off')
-        ax2.imshow(foreground_mask, cmap='gray')
-        ax2.set_title("Foreground Mask")
-        ax2.axis('off')
-        ax3.imshow(middleground_mask, cmap='gray')
-        ax3.set_title("Middleground Mask")
-        ax3.axis('off')
-        ax4.imshow(background_mask, cmap='gray')
-        ax4.set_title("Background Mask")
-        ax4.axis('off')
-        plt.show()
-
-    return depth_map, foreground, middleground, background
-
+    return depth_map, depth_mask_grid
 
 def apply_sky_filter(sky_filter, ground_image_vis, grid_size, debug=False):
     """
@@ -218,7 +185,6 @@ def apply_sky_filter(sky_filter, ground_image_vis, grid_size, debug=False):
 
     return ground_image_no_sky, sky_mask, grid_mask
 
-
 def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=16):
     """
     Retrieves direction tokens and their corresponding indices based on the given angle or vertical index.
@@ -242,7 +208,7 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=16):
         direction_tokens = []
         indices = []
         for r in range(grid_size):
-            delta = 4
+            delta = 0
             x = int(center[0] + (r+delta) * np.cos(np.deg2rad(angle)))
             y = int(center[1] - (r+delta) * np.sin(np.deg2rad(angle)))
             if 0 <= x < grid_size and 0 <= y < grid_size:
@@ -259,7 +225,6 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=16):
         direction_tokens = tokens[vertical_idx::grid_size]  # extract each vertical line
         return direction_tokens, [(i, vertical_idx) for i in range(grid_size)]
         
-
 def find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, image_span, debug=False):
     """
     Finds the alignment between averaged vertical tokens and averaged radial tokens.
@@ -304,7 +269,6 @@ def find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, 
     confidence = (mean_distance - min_distance) / std_distance  # Z-score
 
     return best_orientation, distances, min_distance, confidence
-
 
 def test(model, data_loader, device, savepath='results', debug=False):
 
@@ -365,10 +329,16 @@ def test(model, data_loader, device, savepath='results', debug=False):
             aerial_image_vis = aerial_image_vis.astype(np.uint8)
 
             # Apply sky filter
-            ground_image_no_sky, sky_mask, grid_mask = apply_sky_filter(sky_filter, ground_image_vis, grid_size=16, debug=False)
+            ground_image_no_sky, sky_mask, sky_grid = apply_sky_filter(sky_filter, ground_image_vis, grid_size=16, debug=False)
 
             # Apply depth estimation
-            depth_map, foreground, middleground, background = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, debug=False)
+            depth_map, depth_mask = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, debug=False)
+
+            # Define depth weights
+            depth_weights = np.zeros_like(depth_mask, dtype=float)
+            depth_weights[depth_mask == 0] = 1.0  # background
+            depth_weights[depth_mask == 1] = 1.5  # middleground
+            depth_weights[depth_mask == 2] = 2.0  # foreground
 
             # Normalize the features
             normalized_features1 = normalize(ground_tokens.squeeze().detach().cpu().numpy(), axis=1)
@@ -391,9 +361,10 @@ def test(model, data_loader, device, savepath='results', debug=False):
                 valid_tokens = []
                 valid_weights = []
                 for token, (y, x) in zip(vertical_tokens, indices):
-                    if grid_mask[y, x] == 1:  # 1 indicates ground, 0 indicates sky
+                    if sky_grid[y, x] == 1:  # 1 indicates ground, 0 indicates sky
                         valid_tokens.append(token)
-                        valid_weights.append(1.0)  # You can adjust the weights if needed
+                        # valid_weights.append(1.0)
+                        valid_weights.append(depth_weights[y, x])
                 
                 if valid_tokens:
                     valid_tokens = np.array(valid_tokens)
