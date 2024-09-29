@@ -21,12 +21,14 @@ from dataset import PairedImagesDataset, sample_paired_images
 from model import CroDINO, Dinov2Matcher, CosineSimilarityLoss, get_combined_embedding_visualization_all
 from skyfilter import SkyFilter
 
+from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+import requests
+
 import matplotlib
 matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
 
-from transformers import pipeline
 
-def apply_depth_estimation(model, image, device, debug=False):
+def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=False):
     """
     Applies depth estimation to the image, splitting tokens into foreground, middleground, and background.
     Parameters:
@@ -40,57 +42,111 @@ def apply_depth_estimation(model, image, device, debug=False):
     - background: The mask indicating the background regions.
     """
 
-    # https://huggingface.co/docs/transformers/en/tasks/monocular_depth_estimation
+    # Prepare image for the model
+    inputs = image_processor(images=image, return_tensors="pt")
 
-    predictions = model(image)
-    depth_map = predictions["depth"]
+    # Dimensions of the image
+    height, width = image.shape[:2]
 
-    # # Load the depth estimation model and processor
-    # checkpoint = "Intel/dpt-hybrid-midas"  # Example checkpoint, adjust if necessary
-    # image_processor = AutoImageProcessor.from_pretrained(checkpoint)
-    # model = AutoModelForDepthEstimation.from_pretrained(checkpoint).to(device)
+    # Get the predicted depth
+    with torch.no_grad():
+        outputs = model(**inputs)
+        predicted_depth = outputs.predicted_depth
 
-    # # Prepare the image for the model
-    # inputs = image_processor(images=image, return_tensors="pt").to(device)
+    # Interpolate to the original image size
+    prediction = torch.nn.functional.interpolate(
+        predicted_depth.unsqueeze(1),
+        size = image.shape[:2][::-1],  # [width, height]
+        mode="bicubic",
+        align_corners=False,
+    )
 
-    # # Perform depth estimation
-    # with torch.no_grad():
-    #     outputs = model(**inputs)
-
-    # # Post-process the depth map
-    # depth_map = outputs.predicted_depth
+    # Convert the tensor to a NumPy array and remove extra dimensions
+    depth_map = prediction.squeeze().cpu().numpy()
 
     # Define depth thresholds for foreground, middleground, and background
-    # You may need to adjust these thresholds based on your specific dataset and requirements
-    max_depth = torch.max(depth_map)
-    min_depth = torch.min(depth_map)
-    threshold1 = min_depth + (max_depth - min_depth) / 3 
-    threshold2 = min_depth + 2 * (max_depth - min_depth) / 3
+    depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
+    threshold1 = 0.6
+    threshold2 = 0.2
 
     # Create masks for foreground, middleground, and background
-    foreground = depth_map <= threshold1
-    middleground = (depth_map > threshold1) & (depth_map <= threshold2)
-    background = depth_map > threshold2
+    foreground = depth_map > threshold1
+    middleground = (depth_map <= threshold1) & (depth_map > threshold2)
+    background = depth_map <= threshold2
+
+    # Calculate the size of each grid cell
+    cell_height = height // grid_size
+    cell_width = width // grid_size
+
+    # Initialize the grid mask
+    foreground_mask = np.zeros((grid_size, grid_size), dtype=np.uint8)
+    middleground_mask = np.zeros((grid_size, grid_size), dtype=np.uint8)
+    background_mask = np.zeros((grid_size, grid_size), dtype=np.uint8)
+
+    # Loop over each cell in the grid
+    for i in range(grid_size):
+        for j in range(grid_size):
+            # Define the region of interest (ROI) for this cell
+            start_x = j * cell_width
+            start_y = i * cell_height
+            end_x = (j + 1) * cell_width if j < grid_size - 1 else width
+            end_y = (i + 1) * cell_height if i < grid_size - 1 else height
+            
+            # Extract the cell from the respective masks
+            foreground_cell = foreground[start_y:end_y, start_x:end_x]
+            middleground_cell = middleground[start_y:end_y, start_x:end_x]
+            background_cell = background[start_y:end_y, start_x:end_x]
+
+            # Check for empty cells and handle NaN values
+            fg_mean = np.mean(foreground_cell) if foreground_cell.size > 0 else 0
+            mg_mean = np.mean(middleground_cell) if middleground_cell.size > 0 else 0
+            bg_mean = np.mean(background_cell) if background_cell.size > 0 else 0
+            
+            if debug:
+                print(f"Foreground Cell: {fg_mean:.2f} \tMiddleground Cell: {mg_mean:.2f} \tBackground Cell: {bg_mean:.2f}")
+
+            # Apply majority voting for masks
+            foreground_mask[i, j] = 1 if fg_mean > 0.5 else 0
+            middleground_mask[i, j] = 1 if mg_mean > 0.5 else 0
+            background_mask[i, j] = 1 if bg_mean > 0.5 else 0
+
+
 
     # Visualize the depth map and masks if in debug mode
     if debug:
-        plt.figure(figsize=(15, 5))
-        plt.subplot(141)
-        plt.imshow(image)
-        plt.title('Original Image')
-        plt.axis('off')
-        plt.subplot(142)
-        plt.imshow(depth_map.squeeze().cpu().numpy(), cmap='viridis')
+        plt.figure(figsize=(18, 18))
+        plt.subplot(221)
+        plt.imshow(depth_map, cmap='plasma')
+        plt.colorbar(label='Depth Normalized')
         plt.title('Depth Map')
         plt.axis('off')
-        plt.subplot(143)
-        plt.imshow(foreground.squeeze().cpu().numpy(), cmap='gray')
+        plt.subplot(222)
+        plt.imshow(foreground, cmap='gray')
         plt.title('Foreground Mask')
         plt.axis('off')
-        plt.subplot(144)
-        plt.imshow(background.squeeze().cpu().numpy(), cmap='gray')
+        plt.subplot(223)
+        plt.imshow(middleground, cmap='gray')
+        plt.title('Middleground Mask')
+        plt.axis('off')
+        plt.subplot(224)
+        plt.imshow(background, cmap='gray')
         plt.title('Background Mask')
         plt.axis('off')
+        plt.show()
+
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 18))
+        ax1.imshow(image)
+        ax1.set_title("Original Image")
+        ax1.axis('off')
+        ax2.imshow(foreground_mask, cmap='gray')
+        ax2.set_title("Foreground Mask")
+        ax2.axis('off')
+        ax3.imshow(middleground_mask, cmap='gray')
+        ax3.set_title("Middleground Mask")
+        ax3.axis('off')
+        ax4.imshow(background_mask, cmap='gray')
+        ax4.set_title("Background Mask")
+        ax4.axis('off')
         plt.show()
 
     return depth_map, foreground, middleground, background
@@ -114,20 +170,6 @@ def apply_sky_filter(sky_filter, ground_image_vis, grid_size, debug=False):
 
     # Process the image array directly
     ground_image_no_sky, sky_mask = sky_filter.run_img_array(ground_image_vis)
-
-    # Visualize the original image, mask, and the sky-removed image
-    if debug:
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
-        ax1.imshow(ground_image_vis)
-        ax1.set_title("Original Image")
-        ax1.axis('off')
-        ax2.imshow(sky_mask, cmap='gray')
-        ax2.set_title("Sky Mask")
-        ax2.axis('off')
-        ax3.imshow(ground_image_no_sky)
-        ax3.set_title("Image Without Sky")
-        ax3.axis('off')
-        plt.show()
 
     # Dimensions of the image
     height, width = ground_image_no_sky.shape[:2]
@@ -157,12 +199,21 @@ def apply_sky_filter(sky_filter, ground_image_vis, grid_size, debug=False):
             else:
                 grid_mask[i, j] = 0  # Mark as ground
 
-    # Visualize the grid mask
+    # Visualize the original image, mask, sky-removed image and grid mask
     if debug:
-        plt.figure(figsize=(6, 6))
-        plt.imshow(grid_mask, cmap='gray')
-        plt.title("Grid Mask")
-        plt.axis('off')
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 18))
+        ax1.imshow(ground_image_vis)
+        ax1.set_title("Original Image")
+        ax1.axis('off')
+        ax2.imshow(sky_mask, cmap='gray')
+        ax2.set_title("Sky Mask")
+        ax2.axis('off')
+        ax3.imshow(ground_image_no_sky)
+        ax3.set_title("Image Without Sky")
+        ax3.axis('off')
+        ax4.imshow(grid_mask, cmap='gray')
+        ax4.set_title("Grid Mask")
+        ax4.axis('off')
         plt.show()
 
     return ground_image_no_sky, sky_mask, grid_mask
@@ -247,33 +298,12 @@ def find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, 
                 print(f"Min Distance: {min_distance:.4f} \tBest Orientation: {best_orientation}°")
         distances.append(cone_distance)
 
-    # Compute Combined Alignment
-    num_angles = len(distances)
-    combined_distances = []
-
-    # Sum opposite directions' distances
-    for i in range(num_angles // 2):
-        combined_distance = distances[i] + distances[(i + num_angles // 2) % num_angles]
-        combined_distances.append(combined_distance)
-
-    # Find the line with the least combined distance
-    min_combined_distance = min(combined_distances)
-    min_combined_index = combined_distances.index(min_combined_distance)
-
-    # Compare the two possible directions on that line and select the best one
-    if distances[min_combined_index] < distances[(min_combined_index + num_angles // 2) % num_angles]:
-        best_combined_orientation = min_combined_index * angle_step
-        combined_min_distance = distances[min_combined_index]
-    else:
-        best_combined_orientation = (min_combined_index + num_angles // 2) * angle_step
-        combined_min_distance = distances[(min_combined_index + num_angles // 2) % num_angles]
-
     # Compute confidence
     mean_distance = np.mean(distances)
     std_distance = np.std(distances)
     confidence = (mean_distance - min_distance) / std_distance  # Z-score
 
-    return best_orientation, distances, min_distance, confidence, best_combined_orientation, combined_min_distance
+    return best_orientation, distances, min_distance, confidence
 
 
 def test(model, data_loader, device, savepath='results', debug=False):
@@ -287,8 +317,8 @@ def test(model, data_loader, device, savepath='results', debug=False):
     sky_filter = SkyFilter() 
 
     # Initialize the depth estimation model
-    checkpoint = "depth-anything/Depth-Anything-V2-base-hf"
-    depth_estimator = pipeline("depth-estimation", model=checkpoint, device=device)
+    image_processor_depth = AutoImageProcessor.from_pretrained("LiheYoung/depth-anything-small-hf")
+    depth_model = AutoModelForDepthEstimation.from_pretrained("LiheYoung/depth-anything-small-hf")
 
     delta_yaws = []
     delta_yaws_combined = []
@@ -314,7 +344,7 @@ def test(model, data_loader, device, savepath='results', debug=False):
             pitch = pitchs[i].item()
             
             # Compute the output of the model
-            ground_tokens, aerial_tokens, attention = model(ground_image, aerial_image, debug=False)
+            ground_tokens, aerial_tokens, _ = model(ground_image, aerial_image, debug=False)
 
             if debug:
                 print("fov", fov)
@@ -338,7 +368,7 @@ def test(model, data_loader, device, savepath='results', debug=False):
             ground_image_no_sky, sky_mask, grid_mask = apply_sky_filter(sky_filter, ground_image_vis, grid_size=16, debug=False)
 
             # Apply depth estimation
-            depth_map, foreground, middleground, background = apply_depth_estimation(depth_estimator, ground_image_no_sky, device, debug=True)
+            depth_map, foreground, middleground, background = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, debug=False)
 
             # Normalize the features
             normalized_features1 = normalize(ground_tokens.squeeze().detach().cpu().numpy(), axis=1)
@@ -394,12 +424,10 @@ def test(model, data_loader, device, savepath='results', debug=False):
                 print("averaged_radial_tokens.shape:", averaged_radial_tokens.shape)   
 
             # Find the best alignment
-            best_orientation, distances, min_distance, confidence, best_combined_orientation, combined_min_distance = find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, fov_x)
+            best_orientation, distances, min_distance, confidence = find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, fov_x)
 
             delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
-            delta_yaw_combined = np.abs(((90 - (yaw - 180)) - best_combined_orientation + 180) % 360 - 180)
             delta_yaws.append(delta_yaw)
-            delta_yaws_combined.append(delta_yaw_combined)
 
             fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
 
@@ -412,12 +440,9 @@ def test(model, data_loader, device, savepath='results', debug=False):
             center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
             end_x = int(center[0] + radius * np.cos(np.deg2rad(best_orientation)))
             end_y = int(center[1] - radius * np.sin(np.deg2rad(best_orientation)))
-            end_x_combined = int(center[0] + radius * np.cos(np.deg2rad(best_combined_orientation)))
-            end_y_combined = int(center[1] - radius * np.sin(np.deg2rad(best_combined_orientation)))
             end_x_GT = int(center[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
             end_y_GT = int(center[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
             line_pred = ax2.plot([center[0], end_x], [center[1], end_y], color='red', linestyle='--', label='Prediction')
-            line_pred_combined = ax2.plot([center[0], end_x_combined], [center[1], end_y_combined], color='blue', linestyle='--', label='Combined Prediction')
             line_gt = ax2.plot([center[0], end_x_GT], [center[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
 
             ax2.set_title("Aerial Image Orientation - Delta: {:.4f}°".format(delta_yaw))
