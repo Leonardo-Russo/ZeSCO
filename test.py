@@ -30,8 +30,9 @@ matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
 
 def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=False):
     """
-    Applies depth estimation to the image, splitting tokens into foreground, middleground, and background.
-    Returns a depth mask that can be used for token weighting.
+    Applies depth estimation to the image, and returns the depth map along with
+    a downsampled version of the depth map on a 16x16 grid where each grid cell
+    contains the average depth value of the pixels in that cell.
     
     Parameters:
     - model: The depth estimation model.
@@ -42,7 +43,7 @@ def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=Fa
 
     Returns:
     - depth_map: The estimated depth map for the image.
-    - depth_mask: The mask labeling foreground, middleground, and background.
+    - depth_map_grid: The downsampled 16x16 depth map, containing average depth values.
     """
     # Prepare image for the model
     inputs = image_processor(images=image, return_tensors="pt")
@@ -58,7 +59,7 @@ def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=Fa
     # Interpolate to the original image size
     prediction = torch.nn.functional.interpolate(
         predicted_depth.unsqueeze(1),
-        size = image.shape[:2][::-1],  # [width, height]
+        size=image.shape[:2][::-1],  # [width, height]
         mode="bicubic",
         align_corners=False,
     )
@@ -66,28 +67,15 @@ def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=Fa
     # Convert the tensor to a NumPy array and remove extra dimensions
     depth_map = prediction.squeeze().cpu().numpy()
 
-    # Define depth thresholds for foreground, middleground, and background
+    # Normalize the depth map to the range [0, 1]
     depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
-    threshold1 = 0.6
-    threshold2 = 0.2
-
-    # Create masks for foreground, middleground, and background
-    foreground = depth_map > threshold1
-    middleground = (depth_map <= threshold1) & (depth_map > threshold2)
-    background = depth_map <= threshold2
 
     # Calculate the size of each grid cell
     cell_height = height // grid_size
     cell_width = width // grid_size
 
-    # Create a combined depth mask (0: background, 1: middleground, 2: foreground)
-    depth_mask = np.zeros_like(depth_map, dtype=np.uint8)
-    depth_mask[foreground] = 2
-    depth_mask[middleground] = 1
-    depth_mask[background] = 0
-
-    # Convert depth map into grid format
-    depth_mask_grid = np.zeros((grid_size, grid_size), dtype=np.uint8)
+    # Create the downsampled depth map grid
+    depth_map_grid = np.zeros((grid_size, grid_size), dtype=np.float32)
     for i in range(grid_size):
         for j in range(grid_size):
             start_x = j * cell_width
@@ -95,11 +83,11 @@ def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=Fa
             end_x = (j + 1) * cell_width if j < grid_size - 1 else width
             end_y = (i + 1) * cell_height if i < grid_size - 1 else height
             
-            # Assign the most frequent depth class in the cell
-            cell_depth = depth_mask[start_y:end_y, start_x:end_x]
-            depth_mask_grid[i, j] = np.bincount(cell_depth.flatten()).argmax()
+            # Calculate the average depth value in the cell
+            cell_depth = depth_map[start_y:end_y, start_x:end_x]
+            depth_map_grid[i, j] = np.mean(cell_depth)
 
-    # Visualize the depth map and masks if in debug mode
+    # Visualize the depth map and downsampled depth map grid if in debug mode
     if debug:
         plt.figure(figsize=(18, 8))
         plt.subplot(131)
@@ -112,12 +100,13 @@ def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=Fa
         plt.title('Depth Map')
         plt.axis('off')
         plt.subplot(133)
-        plt.imshow(depth_mask_grid, cmap='gray')
-        plt.title('Depth Mask')
+        plt.imshow(depth_map_grid, cmap='plasma')
+        plt.colorbar()
+        plt.title('Downsampled Depth Map (16x16 Grid)')
         plt.axis('off')
         plt.show()
 
-    return depth_map, depth_mask_grid
+    return depth_map, depth_map_grid
 
 def apply_sky_filter(sky_filter, ground_image_vis, grid_size, debug=False):
     """
@@ -225,7 +214,7 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=16):
         direction_tokens = tokens[vertical_idx::grid_size]  # extract each vertical line
         return direction_tokens, [(i, vertical_idx) for i in range(grid_size)]
         
-def find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, image_span, debug=False):
+def find_alignment(averaged_foreground_tokens, averaged_middleground_tokens, averaged_background_tokens, averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens, grid_size, image_span, debug=False):
     """
     Finds the alignment between averaged vertical tokens and averaged radial tokens.
     Parameters:
@@ -248,12 +237,14 @@ def find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, 
         cone_distance = 0
         for i in range(grid_size+1):
 
-            vertical_token = averaged_vertical_tokens[(grid_size-1)-i]
-            radial_token = averaged_radial_tokens[int(j + i - grid_size/2) % averaged_radial_tokens.shape[0]]
+            fore_radial_token = averaged_fore_radial_tokens[int(j + i - grid_size/2) % averaged_fore_radial_tokens.shape[0]]
+            middle_radial_token = averaged_middle_radial_tokens[int(j + i - grid_size/2) % averaged_middle_radial_tokens.shape[0]]
+            back_radial_token = averaged_back_radial_tokens[int(j + i - grid_size/2) % averaged_back_radial_tokens.shape[0]]
             # print(f"beta: {beta:.2f} \tangle: {(j + i - grid_size/2)*angle_step} \tindex: {int(j + i - grid_size/2) % averaged_radial_tokens.shape[0]}")       
 
-            cone_distance += (1 - np.dot(vertical_token, radial_token))  # Cosine distance
-            # cone_distance += np.linalg.norm(vertical_token - radial_token)  # Euclidean distance
+            cone_distance += (1 - np.dot(averaged_foreground_tokens[(grid_size-1)-i], fore_radial_token))       # cosine distance
+            cone_distance += (1 - np.dot(averaged_middleground_tokens[(grid_size-1)-i], middle_radial_token))
+            cone_distance += (1 - np.dot(averaged_background_tokens[(grid_size-1)-i], back_radial_token))
 
         cone_distance /= grid_size
         if cone_distance < min_distance:
@@ -286,6 +277,8 @@ def test(model, data_loader, device, savepath='results', create_figs=False, debu
 
     delta_yaws = []
     delta_yaws_combined = []
+
+    threshold = 0.4
 
     for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in tqdm(enumerate(data_loader), total=len(data_loader), desc="Processing Batches"):
         ground_images = ground_images.to(device)
@@ -332,13 +325,7 @@ def test(model, data_loader, device, savepath='results', create_figs=False, debu
             ground_image_no_sky, sky_mask, sky_grid = apply_sky_filter(sky_filter, ground_image_vis, grid_size=16, debug=False)
 
             # Apply depth estimation
-            depth_map, depth_mask = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, debug=False)
-
-            # Define depth weights
-            depth_weights = np.zeros_like(depth_mask, dtype=float)
-            depth_weights[depth_mask == 0] = 2.0  # background
-            depth_weights[depth_mask == 1] = 1.5  # middleground
-            depth_weights[depth_mask == 2] = 1.0  # foreground
+            depth_map, depth_map_grid = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, debug=False)
 
             # Normalize the features
             normalized_features1 = normalize(ground_tokens.squeeze().detach().cpu().numpy(), axis=1)
@@ -355,47 +342,89 @@ def test(model, data_loader, device, savepath='results', create_figs=False, debu
             angle_step = fov_x / grid_size
         
             # Compute Averaged Tokens using the weight vector, excluding sky tokens
-            averaged_vertical_tokens = []
+            averaged_foreground_tokens = []
+            averaged_middleground_tokens = []
+            averaged_background_tokens = []
             for i in range(grid_size):
                 vertical_tokens, indices = get_direction_tokens(normalized_features1, vertical_idx=i, grid_size=grid_size)
                 valid_tokens = []
-                valid_weights = []
+                foreground_weights = []
+                middleground_weights = []
+                background_weights = []
                 for token, (y, x) in zip(vertical_tokens, indices):
                     if sky_grid[y, x] == 1:  # 1 indicates ground, 0 indicates sky
                         valid_tokens.append(token)
-                        # valid_weights.append(1.0)
-                        valid_weights.append(depth_weights[y, x])
+                        foreground_weights.append(depth_map_grid[y, x])
+                        if depth_map_grid[y, x] <= 0.5:
+                            middleground_weights.append((1 / threshold) * depth_map_grid[y, x])
+                        else:
+                            middleground_weights.append((1 - depth_map_grid[y, x]) / depth_map_grid[y, x])
+                        background_weights.append(1 - depth_map_grid[y, x])
                 
                 if valid_tokens:
                     valid_tokens = np.array(valid_tokens)
-                    valid_weights = np.array(valid_weights)
-                    valid_weights /= np.sum(valid_weights)  # Normalize the weights
+                    foreground_weights = np.array(foreground_weights)
+                    middleground_weights = np.array(middleground_weights)
+                    background_weights = np.array(background_weights)
+                    foreground_weights /= np.sum(foreground_weights)  # Normalize the weights
+                    middleground_weights /= np.sum(middleground_weights)
+                    background_weights /= np.sum(background_weights)
                     
                     # Calculate weighted average only on valid (non-sky) tokens
-                    weighted_avg = np.average(valid_tokens, axis=0, weights=valid_weights)
-                    averaged_vertical_tokens.append(weighted_avg)
+                    foreground_avg = np.average(valid_tokens, axis=0, weights=foreground_weights)
+                    middleground_avg = np.average(valid_tokens, axis=0, weights=middleground_weights)
+                    background_avg = np.average(valid_tokens, axis=0, weights=background_weights)
+                    averaged_foreground_tokens.append(foreground_avg)
+                    averaged_middleground_tokens.append(middleground_avg)
+                    averaged_background_tokens.append(background_avg)
                 else:
                     # If no valid tokens are found (i.e., entire column is sky), append a zero vector or any placeholder
-                    averaged_vertical_tokens.append(np.zeros_like(vertical_tokens[0]))
-            averaged_vertical_tokens = np.array(averaged_vertical_tokens)
+                    averaged_foreground_tokens.append(np.zeros_like(vertical_tokens[0]))
+                    averaged_middleground_tokens.append(np.zeros_like(vertical_tokens[0]))
+                    averaged_background_tokens.append(np.zeros_like(vertical_tokens[0]))
+            
+            averaged_foreground_tokens = np.array(averaged_foreground_tokens)
+            averaged_middleground_tokens = np.array(averaged_middleground_tokens)
+            averaged_background_tokens = np.array(averaged_background_tokens)
 
 
-            averaged_radial_tokens = []
+            averaged_fore_radial_tokens = []
+            averaged_middle_radial_tokens = []
+            averaged_back_radial_tokens = []
             for beta in np.arange(0, 360, angle_step):
                 radial_tokens, _ = get_direction_tokens(normalized_features2, angle=beta, grid_size=grid_size)
-                # increasing_weights = np.linspace(0.1, 1, len(radial_tokens))
-                increasing_weights = np.linspace(1, 1, len(radial_tokens))
+                increasing_weights = np.linspace(0, 1, len(radial_tokens))
+                decreasing_weights = np.linspace(1, 0, len(radial_tokens))
+
+                # Ensure middle_weights has the same length as radial_tokens
+                half_len = len(radial_tokens) // 2
+                middle_weights = np.hstack((np.linspace(0, 1, half_len, endpoint=False), np.linspace(1, 0, len(radial_tokens) - half_len)))
+
                 increasing_weights /= np.sum(increasing_weights)
-                weighted_avg = np.average(radial_tokens, axis=0, weights=increasing_weights)
-                averaged_radial_tokens.append(weighted_avg)
-            averaged_radial_tokens = np.array(averaged_radial_tokens)
+                decreasing_weights /= np.sum(decreasing_weights)
+                middle_weights /= np.sum(middle_weights)
+
+                # print("radial tokens:", radial_tokens.shape)
+                # print("middle weights:", middle_weights.shape)
+
+                foreground_avg = np.average(radial_tokens, axis=0, weights=decreasing_weights)
+                middleground_avg = np.average(radial_tokens, axis=0, weights=middle_weights)
+                background_avg = np.average(radial_tokens, axis=0, weights=increasing_weights)
+
+                averaged_fore_radial_tokens.append(foreground_avg)
+                averaged_middle_radial_tokens.append(middleground_avg)
+                averaged_back_radial_tokens.append(background_avg)
+
+            averaged_fore_radial_tokens = np.array(averaged_fore_radial_tokens)
+            averaged_middle_radial_tokens = np.array(averaged_middle_radial_tokens)
+            averaged_back_radial_tokens = np.array(averaged_back_radial_tokens)
 
             if debug:
-                print("averaged_vertical_tokens.shape:", averaged_vertical_tokens.shape)
-                print("averaged_radial_tokens.shape:", averaged_radial_tokens.shape)   
+                print("averaged_vertical_tokens.shape:", averaged_foreground_tokens.shape)
+                print("averaged_radial_tokens.shape:", averaged_fore_radial_tokens.shape)   
 
             # Find the best alignment
-            best_orientation, distances, min_distance, confidence = find_alignment(averaged_vertical_tokens, averaged_radial_tokens, grid_size, fov_x)
+            best_orientation, distances, min_distance, confidence = find_alignment(averaged_foreground_tokens, averaged_middleground_tokens, averaged_background_tokens, averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens, grid_size, fov_x)
 
             delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
             delta_yaws.append(delta_yaw)
