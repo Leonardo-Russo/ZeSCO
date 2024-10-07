@@ -242,9 +242,14 @@ def find_alignment(averaged_foreground_tokens, averaged_middleground_tokens, ave
             back_radial_token = averaged_back_radial_tokens[int(j + i - grid_size/2) % averaged_back_radial_tokens.shape[0]]
             # print(f"beta: {beta:.2f} \tangle: {(j + i - grid_size/2)*angle_step} \tindex: {int(j + i - grid_size/2) % averaged_radial_tokens.shape[0]}")       
 
-            cone_distance += (1 - np.dot(averaged_foreground_tokens[(grid_size-1)-i], fore_radial_token))       # cosine distance
-            cone_distance += (1 - np.dot(averaged_middleground_tokens[(grid_size-1)-i], middle_radial_token))
-            cone_distance += (1 - np.dot(averaged_background_tokens[(grid_size-1)-i], back_radial_token))
+            vert_avg_tokens = np.vstack((averaged_foreground_tokens[(grid_size-1)-i], averaged_middleground_tokens[(grid_size-1)-i], averaged_background_tokens[(grid_size-1)-i]))
+            rad_tokens = np.vstack((fore_radial_token, middle_radial_token, back_radial_token))
+
+            # cone_distance += (1 - np.dot(averaged_foreground_tokens[(grid_size-1)-i], fore_radial_token))       # cosine distance
+            # cone_distance += (1 - np.dot(averaged_middleground_tokens[(grid_size-1)-i], middle_radial_token))
+            # cone_distance += (1 - np.dot(averaged_background_tokens[(grid_size-1)-i], back_radial_token))
+
+            cone_distance += np.linalg.norm((1 - np.dot(vert_avg_tokens, np.transpose(rad_tokens))))       # cosine distance
 
         cone_distance /= grid_size
         if cone_distance < min_distance:
@@ -260,6 +265,90 @@ def find_alignment(averaged_foreground_tokens, averaged_middleground_tokens, ave
     confidence = (mean_distance - min_distance) / std_distance  # Z-score
 
     return best_orientation, distances, min_distance, confidence
+
+def get_averaged_vertical_tokens(angle_step, normalized_features1, grid_size, sky_grid, depth_map_grid, threshold=0.5):
+    
+    averaged_foreground_tokens = []
+    averaged_middleground_tokens = []
+    averaged_background_tokens = []
+    for i in range(grid_size):
+        vertical_tokens, indices = get_direction_tokens(normalized_features1, vertical_idx=i, grid_size=grid_size)
+        valid_tokens = []
+        foreground_weights = []
+        middleground_weights = []
+        background_weights = []
+        for token, (y, x) in zip(vertical_tokens, indices):
+            if sky_grid[y, x] == 1:  # 1 indicates ground, 0 indicates sky
+                valid_tokens.append(token)
+                foreground_weights.append(depth_map_grid[y, x])
+                if depth_map_grid[y, x] <= 0.5:
+                    middleground_weights.append((1 / threshold) * depth_map_grid[y, x])
+                else:
+                    middleground_weights.append((1 - depth_map_grid[y, x]) / depth_map_grid[y, x])
+                background_weights.append(1 - depth_map_grid[y, x])
+        
+        if valid_tokens:
+            valid_tokens = np.array(valid_tokens)
+            foreground_weights = np.array(foreground_weights)
+            middleground_weights = np.array(middleground_weights)
+            background_weights = np.array(background_weights)
+            foreground_weights /= np.sum(foreground_weights)  # Normalize the weights
+            middleground_weights /= np.sum(middleground_weights)
+            background_weights /= np.sum(background_weights)
+            
+            # Calculate weighted average only on valid (non-sky) tokens
+            foreground_avg = np.average(valid_tokens, axis=0, weights=foreground_weights)
+            middleground_avg = np.average(valid_tokens, axis=0, weights=middleground_weights)
+            background_avg = np.average(valid_tokens, axis=0, weights=background_weights)
+            averaged_foreground_tokens.append(foreground_avg)
+            averaged_middleground_tokens.append(middleground_avg)
+            averaged_background_tokens.append(background_avg)
+        else:
+            # If no valid tokens are found (i.e., entire column is sky), append a zero vector or any placeholder
+            averaged_foreground_tokens.append(np.zeros_like(vertical_tokens[0]))
+            averaged_middleground_tokens.append(np.zeros_like(vertical_tokens[0]))
+            averaged_background_tokens.append(np.zeros_like(vertical_tokens[0]))
+    
+    averaged_foreground_tokens = np.array(averaged_foreground_tokens)
+    averaged_middleground_tokens = np.array(averaged_middleground_tokens)
+    averaged_background_tokens = np.array(averaged_background_tokens)
+
+    return averaged_foreground_tokens, averaged_middleground_tokens, averaged_background_tokens
+
+def get_averaged_radial_tokens(angle_step, normalized_features2, grid_size, sky_grid, depth_map_grid):
+    
+    averaged_fore_radial_tokens = []
+    averaged_middle_radial_tokens = []
+    averaged_back_radial_tokens = []
+    for beta in np.arange(0, 360, angle_step):
+        radial_tokens, _ = get_direction_tokens(normalized_features2, angle=beta, grid_size=grid_size)
+        increasing_weights = np.linspace(0, 1, len(radial_tokens))
+        decreasing_weights = np.linspace(1, 0, len(radial_tokens))
+
+        # Ensure middle_weights has the same length as radial_tokens
+        half_len = len(radial_tokens) // 2
+        middle_weights = np.hstack((np.linspace(0, 1, half_len, endpoint=False), np.linspace(1, 0, len(radial_tokens) - half_len)))
+
+        increasing_weights /= np.sum(increasing_weights)
+        decreasing_weights /= np.sum(decreasing_weights)
+        middle_weights /= np.sum(middle_weights)
+
+        # print("radial tokens:", radial_tokens.shape)
+        # print("middle weights:", middle_weights.shape)
+
+        foreground_avg = np.average(radial_tokens, axis=0, weights=decreasing_weights)
+        middleground_avg = np.average(radial_tokens, axis=0, weights=middle_weights)
+        background_avg = np.average(radial_tokens, axis=0, weights=increasing_weights)
+
+        averaged_fore_radial_tokens.append(foreground_avg)
+        averaged_middle_radial_tokens.append(middleground_avg)
+        averaged_back_radial_tokens.append(background_avg)
+
+    averaged_fore_radial_tokens = np.array(averaged_fore_radial_tokens)
+    averaged_middle_radial_tokens = np.array(averaged_middle_radial_tokens)
+    averaged_back_radial_tokens = np.array(averaged_back_radial_tokens)
+
+    return averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens
 
 def test(model, data_loader, device, savepath='results', create_figs=False, debug=False):
 
@@ -280,225 +369,159 @@ def test(model, data_loader, device, savepath='results', create_figs=False, debu
 
     threshold = 0.4
 
-    for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in tqdm(enumerate(data_loader), total=len(data_loader), desc="Processing Batches"):
-        ground_images = ground_images.to(device)
-        aerial_images = aerial_images.to(device)
+    with tqdm(enumerate(data_loader), total=len(data_loader), desc="Processing Batches") as pbar:
+        for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in pbar:
+            ground_images = ground_images.to(device)
+            aerial_images = aerial_images.to(device)
 
-        BATCH_SIZE = ground_images.size(0)
-
-        if debug:
-            print(f"Batch {batch_idx}: fovs", fovs)
-            print(f"Batch {batch_idx}: yaws", yaws)
-            print(f"Batch {batch_idx}: pitchs", pitchs)
-
-        # Assuming you want to handle each image in the batch individually
-        for i in range(BATCH_SIZE):  # Iterate over batch size
-            ground_image = ground_images[i:i+1]
-            aerial_image = aerial_images[i:i+1]
-            fov_x, fov_y = fovs
-            fov = (fov_x[i].item(), fov_y[i].item())
-            yaw = yaws[i].item()
-            pitch = pitchs[i].item()
-            
-            # Compute the output of the model
-            ground_tokens, aerial_tokens, _ = model(ground_image, aerial_image, debug=False)
+            batch_size = ground_images.size(0)
 
             if debug:
-                print("fov", fov)
-                print("yaw", yaw)
-                print("pitch", pitch)
+                print(f"Batch {batch_idx}: fovs", fovs)
+                print(f"Batch {batch_idx}: yaws", yaws)
+                print(f"Batch {batch_idx}: pitchs", pitchs)
 
-            # Calculate the number of patches for ground and aerial images
-            num_patches_ground = (ground_image.shape[-1] // model.patch_size) * (ground_image.shape[-2] // model.patch_size)
-            num_patches_aerial = (aerial_image.shape[-1] // model.patch_size) * (aerial_image.shape[-2] // model.patch_size)
-
-            # Convert images to numpy for visualization
-            ground_image_np = ground_image.squeeze().permute(1, 2, 0).detach().cpu().numpy()
-            aerial_image_np = aerial_image.squeeze().permute(1, 2, 0).detach().cpu().numpy()
-
-            ground_image_vis = ground_image.squeeze(0).cpu().numpy().transpose(1, 2, 0) * 255
-            aerial_image_vis = aerial_image.squeeze(0).cpu().numpy().transpose(1, 2, 0) * 255
-            ground_image_vis = ground_image_vis.astype(np.uint8)
-            aerial_image_vis = aerial_image_vis.astype(np.uint8)
-
-            # Apply sky filter
-            ground_image_no_sky, sky_mask, sky_grid = apply_sky_filter(sky_filter, ground_image_vis, grid_size=16, debug=False)
-
-            # Apply depth estimation
-            depth_map, depth_map_grid = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, debug=False)
-
-            # Normalize the features
-            normalized_features1 = normalize(ground_tokens.squeeze().detach().cpu().numpy(), axis=1)
-            normalized_features2 = normalize(aerial_tokens.squeeze().detach().cpu().numpy(), axis=1)
-            if debug:
-                print("normalized_features1.shape:", normalized_features1.shape)
-                print("normalized_features2.shape:", normalized_features2.shape)
-
-            grid_size = int(np.sqrt(normalized_features1.shape[0]))  # assuming square grid
-            if debug:
-                print("grid_size:", grid_size)
-
-            fov_x = 90                          # horizontal fov in degrees
-            angle_step = fov_x / grid_size
-        
-            # Compute Averaged Tokens using the weight vector, excluding sky tokens
-            averaged_foreground_tokens = []
-            averaged_middleground_tokens = []
-            averaged_background_tokens = []
-            for i in range(grid_size):
-                vertical_tokens, indices = get_direction_tokens(normalized_features1, vertical_idx=i, grid_size=grid_size)
-                valid_tokens = []
-                foreground_weights = []
-                middleground_weights = []
-                background_weights = []
-                for token, (y, x) in zip(vertical_tokens, indices):
-                    if sky_grid[y, x] == 1:  # 1 indicates ground, 0 indicates sky
-                        valid_tokens.append(token)
-                        foreground_weights.append(depth_map_grid[y, x])
-                        if depth_map_grid[y, x] <= 0.5:
-                            middleground_weights.append((1 / threshold) * depth_map_grid[y, x])
-                        else:
-                            middleground_weights.append((1 - depth_map_grid[y, x]) / depth_map_grid[y, x])
-                        background_weights.append(1 - depth_map_grid[y, x])
+            # Assuming you want to handle each image in the batch individually
+            for i in range(batch_size):  # Iterate over batch size
+                ground_image = ground_images[i:i+1]
+                aerial_image = aerial_images[i:i+1]
+                fov_x, fov_y = fovs
+                fov = (fov_x[i].item(), fov_y[i].item())
+                yaw = yaws[i].item()
+                pitch = pitchs[i].item()
                 
-                if valid_tokens:
-                    valid_tokens = np.array(valid_tokens)
-                    foreground_weights = np.array(foreground_weights)
-                    middleground_weights = np.array(middleground_weights)
-                    background_weights = np.array(background_weights)
-                    foreground_weights /= np.sum(foreground_weights)  # Normalize the weights
-                    middleground_weights /= np.sum(middleground_weights)
-                    background_weights /= np.sum(background_weights)
-                    
-                    # Calculate weighted average only on valid (non-sky) tokens
-                    foreground_avg = np.average(valid_tokens, axis=0, weights=foreground_weights)
-                    middleground_avg = np.average(valid_tokens, axis=0, weights=middleground_weights)
-                    background_avg = np.average(valid_tokens, axis=0, weights=background_weights)
-                    averaged_foreground_tokens.append(foreground_avg)
-                    averaged_middleground_tokens.append(middleground_avg)
-                    averaged_background_tokens.append(background_avg)
-                else:
-                    # If no valid tokens are found (i.e., entire column is sky), append a zero vector or any placeholder
-                    averaged_foreground_tokens.append(np.zeros_like(vertical_tokens[0]))
-                    averaged_middleground_tokens.append(np.zeros_like(vertical_tokens[0]))
-                    averaged_background_tokens.append(np.zeros_like(vertical_tokens[0]))
-            
-            averaged_foreground_tokens = np.array(averaged_foreground_tokens)
-            averaged_middleground_tokens = np.array(averaged_middleground_tokens)
-            averaged_background_tokens = np.array(averaged_background_tokens)
-
-
-            averaged_fore_radial_tokens = []
-            averaged_middle_radial_tokens = []
-            averaged_back_radial_tokens = []
-            for beta in np.arange(0, 360, angle_step):
-                radial_tokens, _ = get_direction_tokens(normalized_features2, angle=beta, grid_size=grid_size)
-                increasing_weights = np.linspace(0, 1, len(radial_tokens))
-                decreasing_weights = np.linspace(1, 0, len(radial_tokens))
-
-                # Ensure middle_weights has the same length as radial_tokens
-                half_len = len(radial_tokens) // 2
-                middle_weights = np.hstack((np.linspace(0, 1, half_len, endpoint=False), np.linspace(1, 0, len(radial_tokens) - half_len)))
-
-                increasing_weights /= np.sum(increasing_weights)
-                decreasing_weights /= np.sum(decreasing_weights)
-                middle_weights /= np.sum(middle_weights)
-
-                # print("radial tokens:", radial_tokens.shape)
-                # print("middle weights:", middle_weights.shape)
-
-                foreground_avg = np.average(radial_tokens, axis=0, weights=decreasing_weights)
-                middleground_avg = np.average(radial_tokens, axis=0, weights=middle_weights)
-                background_avg = np.average(radial_tokens, axis=0, weights=increasing_weights)
-
-                averaged_fore_radial_tokens.append(foreground_avg)
-                averaged_middle_radial_tokens.append(middleground_avg)
-                averaged_back_radial_tokens.append(background_avg)
-
-            averaged_fore_radial_tokens = np.array(averaged_fore_radial_tokens)
-            averaged_middle_radial_tokens = np.array(averaged_middle_radial_tokens)
-            averaged_back_radial_tokens = np.array(averaged_back_radial_tokens)
-
-            if debug:
-                print("averaged_vertical_tokens.shape:", averaged_foreground_tokens.shape)
-                print("averaged_radial_tokens.shape:", averaged_fore_radial_tokens.shape)   
-
-            # Find the best alignment
-            best_orientation, distances, min_distance, confidence = find_alignment(averaged_foreground_tokens, averaged_middleground_tokens, averaged_background_tokens, averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens, grid_size, fov_x)
-
-            delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
-            delta_yaws.append(delta_yaw)
-
-            if create_figs or debug:
-
-                fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
-
-                ax1.imshow(ground_image_np)
-                ax1.set_title("Ground Image - Yaw: {:.1f}°".format(yaw))
-                ax1.axis('off')
-
-                ax2.imshow(aerial_image_np)
-                radius = aerial_image_np.shape[0] // 2
-                center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-                end_x = int(center[0] + radius * np.cos(np.deg2rad(best_orientation)))
-                end_y = int(center[1] - radius * np.sin(np.deg2rad(best_orientation)))
-                end_x_GT = int(center[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
-                end_y_GT = int(center[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
-                line_pred = ax2.plot([center[0], end_x], [center[1], end_y], color='red', linestyle='--', label='Prediction')
-                line_gt = ax2.plot([center[0], end_x_GT], [center[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
-
-                ax2.set_title("Aerial Image Orientation - Delta: {:.4f}°".format(delta_yaw))
-                ax2.legend(loc='upper right')
-                ax2.axis('off')
-
-                ax3.plot(np.arange(0, 360, angle_step), distances)
-                ax3.set_title("Distance over Orientations - Confidence: {:.4f}".format(confidence))
-                ax3.grid(True)
-                ax3.set_xlabel('Orientation')
-                ax3.set_ylabel('Distance')
-                ax3.set_xlim(0, 360)
-                ax3.set_ylim(min(distances), max(distances))
-
-                ax4.imshow(aerial_image_np)
-                radius = aerial_image_np.shape[0] // 2
-                center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-                min_dist = min(distances)
-                max_dist = max(distances)
-                for j, beta in enumerate(np.arange(0, 360, angle_step)):
-                    end_x = int(center[0] + radius * np.cos(np.deg2rad(beta)))
-                    end_y = int(center[1] - radius * np.sin(np.deg2rad(beta)))
-                    color = plt.cm.plasma((distances[j] - min_dist) / (max_dist - min_dist))  # Normalize distances for color map
-                    ax4.plot([center[0], end_x], [center[1], end_y], color=color)
-                ax4.set_title("Aerial Image with Distances")
-                ax4.axis('off')
-
-                norm = plt.Normalize(min_dist, max_dist)
-                sm = plt.cm.ScalarMappable(cmap='plasma', norm=norm)
-                sm.set_array([])
-                cbar = plt.colorbar(sm, ax=ax4)
-
-                # Determine the next available file number
-                file_count = len([name for name in os.listdir(results_dir) if name.startswith("sample") and name.endswith(".png")])
-                file_path = os.path.join(results_dir, f"sample_{file_count}.png")
-
-                if create_figs:
-                    plt.savefig(file_path, dpi=300, bbox_inches='tight')
+                # Compute the output of the model
+                ground_tokens, aerial_tokens, _ = model(ground_image, aerial_image, debug=False)
 
                 if debug:
-                    plt.show()
+                    print("fov", fov)
+                    print("yaw", yaw)
+                    print("pitch", pitch)
 
-                if create_figs:
-                    plt.close(fig)
+                # Calculate the number of patches for ground and aerial images
+                num_patches_ground = (ground_image.shape[-1] // model.patch_size) * (ground_image.shape[-2] // model.patch_size)
+                num_patches_aerial = (aerial_image.shape[-1] // model.patch_size) * (aerial_image.shape[-2] // model.patch_size)
+
+                # Convert images to numpy for visualization
+                ground_image_np = ground_image.squeeze().permute(1, 2, 0).detach().cpu().numpy()
+                aerial_image_np = aerial_image.squeeze().permute(1, 2, 0).detach().cpu().numpy()
+
+                ground_image_vis = ground_image.squeeze(0).cpu().numpy().transpose(1, 2, 0) * 255
+                aerial_image_vis = aerial_image.squeeze(0).cpu().numpy().transpose(1, 2, 0) * 255
+                ground_image_vis = ground_image_vis.astype(np.uint8)
+                aerial_image_vis = aerial_image_vis.astype(np.uint8)
+
+                # Apply sky filter
+                ground_image_no_sky, sky_mask, sky_grid = apply_sky_filter(sky_filter, ground_image_vis, grid_size=16, debug=False)
+
+                # Apply depth estimation
+                depth_map, depth_map_grid = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, debug=False)
+
+                # Normalize the features
+                normalized_features1 = normalize(ground_tokens.squeeze().detach().cpu().numpy(), axis=1)
+                normalized_features2 = normalize(aerial_tokens.squeeze().detach().cpu().numpy(), axis=1)
+                if debug:
+                    print("normalized_features1.shape:", normalized_features1.shape)
+                    print("normalized_features2.shape:", normalized_features2.shape)
+
+                grid_size = int(np.sqrt(normalized_features1.shape[0]))  # assuming square grid
+                if debug:
+                    print("grid_size:", grid_size)
+
+                fov_x = 90                          # horizontal fov in degrees
+                angle_step = fov_x / grid_size
+            
+                # Compute Averaged Tokens using the weight vector, excluding sky tokens
+                fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, normalized_features1, grid_size, sky_grid, depth_map_grid, threshold=threshold)
+                fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, normalized_features2, grid_size, sky_grid, depth_map_grid)
+                
+                if debug:
+                    print("averaged vertical tokens: ", fore_vert_avg_tokens.shape)
+                    print("averaged radial tokens: ", fore_rad_avg_tokens.shape)   
+
+                # Find the best alignment
+                best_orientation, distances, min_distance, confidence = find_alignment(fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, fov_x, debug=False)
+
+                delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
+                delta_yaws.append(delta_yaw)
+
+                if create_figs or debug:
+
+                    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
+
+                    ax1.imshow(ground_image_np)
+                    ax1.set_title("Ground Image - Yaw: {:.1f}°".format(yaw))
+                    ax1.axis('off')
+
+                    ax2.imshow(aerial_image_np)
+                    radius = aerial_image_np.shape[0] // 2
+                    center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
+                    end_x = int(center[0] + radius * np.cos(np.deg2rad(best_orientation)))
+                    end_y = int(center[1] - radius * np.sin(np.deg2rad(best_orientation)))
+                    end_x_GT = int(center[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
+                    end_y_GT = int(center[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
+                    line_pred = ax2.plot([center[0], end_x], [center[1], end_y], color='red', linestyle='--', label='Prediction')
+                    line_gt = ax2.plot([center[0], end_x_GT], [center[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
+
+                    ax2.set_title("Aerial Image Orientation - Delta: {:.4f}°".format(delta_yaw))
+                    ax2.legend(loc='upper right')
+                    ax2.axis('off')
+
+                    ax3.plot(np.arange(0, 360, angle_step), distances)
+                    ax3.set_title("Distance over Orientations - Confidence: {:.4f}".format(confidence))
+                    ax3.grid(True)
+                    ax3.set_xlabel('Orientation')
+                    ax3.set_ylabel('Distance')
+                    ax3.set_xlim(0, 360)
+                    ax3.set_ylim(min(distances), max(distances))
+
+                    ax4.imshow(aerial_image_np)
+                    radius = aerial_image_np.shape[0] // 2
+                    center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
+                    min_dist = min(distances)
+                    max_dist = max(distances)
+                    for j, beta in enumerate(np.arange(0, 360, angle_step)):
+                        end_x = int(center[0] + radius * np.cos(np.deg2rad(beta)))
+                        end_y = int(center[1] - radius * np.sin(np.deg2rad(beta)))
+                        color = plt.cm.plasma((distances[j] - min_dist) / (max_dist - min_dist))  # Normalize distances for color map
+                        ax4.plot([center[0], end_x], [center[1], end_y], color=color)
+                    ax4.set_title("Aerial Image with Distances")
+                    ax4.axis('off')
+
+                    norm = plt.Normalize(min_dist, max_dist)
+                    sm = plt.cm.ScalarMappable(cmap='plasma', norm=norm)
+                    sm.set_array([])
+                    cbar = plt.colorbar(sm, ax=ax4)
+
+                    # Determine the next available file number
+                    file_count = len([name for name in os.listdir(results_dir) if name.startswith("sample") and name.endswith(".png")])
+                    file_path = os.path.join(results_dir, f"sample_{file_count}.png")
+
+                    if create_figs:
+                        plt.savefig(file_path, dpi=300, bbox_inches='tight')
+
+                    if debug:
+                        plt.show()
+
+                    if create_figs:
+                        plt.close(fig)
+
+                # Update pbar to show current delta_yaws average
+                pbar.set_postfix({'Delta Yaw': np.mean(delta_yaws)})
+                pbar.update()
 
     # Output the delta_yaw errors
     delta_yaws = np.array(delta_yaws)
-    print("Delta Yaw Errors (degrees):")
-    print(delta_yaws)
     print(f"Mean Delta Yaw Error: {np.mean(delta_yaws)}")
     print(f"Standard Deviation of Delta Yaw Error: {np.std(delta_yaws)}")
+    print(f"Median Delta Yaw Error: {np.median(delta_yaws)}")
 
-    # Optionally save errors to a file
+    # Save results to a text file
     np.savetxt(os.path.join(results_dir, 'delta_yaws.txt'), delta_yaws, header="Delta Yaws (degrees)")
+    with open(os.path.join(results_dir, 'delta_yaws.txt'), 'a') as f:
+        f.write(f"\n\nMean Delta Yaw Error: {np.mean(delta_yaws)}\n")
+        f.write(f"Standard Deviation of Delta Yaw Error: {np.std(delta_yaws)}\n")
+        f.write(f"Median Delta Yaw Error: {np.median(delta_yaws)}\n")
 
 
 
