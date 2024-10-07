@@ -214,7 +214,7 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=16):
         direction_tokens = tokens[vertical_idx::grid_size]  # extract each vertical line
         return direction_tokens, [(i, vertical_idx) for i in range(grid_size)]
         
-def find_alignment(averaged_foreground_tokens, averaged_middleground_tokens, averaged_background_tokens, averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens, grid_size, image_span, debug=False):
+def find_alignment(fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, image_span, debug=False):
     """
     Finds the alignment between averaged vertical tokens and averaged radial tokens.
     Parameters:
@@ -237,19 +237,17 @@ def find_alignment(averaged_foreground_tokens, averaged_middleground_tokens, ave
         cone_distance = 0
         for i in range(grid_size+1):
 
-            fore_radial_token = averaged_fore_radial_tokens[int(j + i - grid_size/2) % averaged_fore_radial_tokens.shape[0]]
-            middle_radial_token = averaged_middle_radial_tokens[int(j + i - grid_size/2) % averaged_middle_radial_tokens.shape[0]]
-            back_radial_token = averaged_back_radial_tokens[int(j + i - grid_size/2) % averaged_back_radial_tokens.shape[0]]
+            fore_rad_token = fore_rad_avg_tokens[int(j + i - grid_size/2) % fore_rad_avg_tokens.shape[0]]
+            midd_rad_token = midd_rad_avg_tokens[int(j + i - grid_size/2) % midd_rad_avg_tokens.shape[0]]
+            back_rad_token = back_rad_avg_tokens[int(j + i - grid_size/2) % back_rad_avg_tokens.shape[0]]
             # print(f"beta: {beta:.2f} \tangle: {(j + i - grid_size/2)*angle_step} \tindex: {int(j + i - grid_size/2) % averaged_radial_tokens.shape[0]}")       
 
-            vert_avg_tokens = np.vstack((averaged_foreground_tokens[(grid_size-1)-i], averaged_middleground_tokens[(grid_size-1)-i], averaged_background_tokens[(grid_size-1)-i]))
-            rad_tokens = np.vstack((fore_radial_token, middle_radial_token, back_radial_token))
-
-            # cone_distance += (1 - np.dot(averaged_foreground_tokens[(grid_size-1)-i], fore_radial_token))       # cosine distance
-            # cone_distance += (1 - np.dot(averaged_middleground_tokens[(grid_size-1)-i], middle_radial_token))
-            # cone_distance += (1 - np.dot(averaged_background_tokens[(grid_size-1)-i], back_radial_token))
+            vert_avg_tokens = np.vstack((fore_vert_avg_tokens[(grid_size-1)-i], midd_vert_avg_tokens[(grid_size-1)-i], back_vert_avg_tokens[(grid_size-1)-i]))
+            # vert_avg_tokens = np.vstack((fore_vert_avg_tokens[i-1], midd_vert_avg_tokens[i-1], back_vert_avg_tokens[i-1]))
+            rad_tokens = np.vstack((fore_rad_token, midd_rad_token, back_rad_token))
 
             cone_distance += np.linalg.norm((1 - np.dot(vert_avg_tokens, np.transpose(rad_tokens))))       # cosine distance
+            # cone_distance += np.linalg.norm((1 - np.dot(fore_rad_token, np.transpose(fore_vert_avg_tokens[(grid_size-1)-i]))))       # cosine distance
 
         cone_distance /= grid_size
         if cone_distance < min_distance:
@@ -344,7 +342,7 @@ def get_averaged_radial_tokens(angle_step, normalized_features2, grid_size, sky_
         averaged_middle_radial_tokens.append(middleground_avg)
         averaged_back_radial_tokens.append(background_avg)
 
-    averaged_fore_radial_tokens = np.array(averaged_fore_radial_tokens)
+    averaged_fore_radial_tokens = np.array(averaged_fore_radial_tokens)         # 64x768
     averaged_middle_radial_tokens = np.array(averaged_middle_radial_tokens)
     averaged_back_radial_tokens = np.array(averaged_back_radial_tokens)
 
@@ -515,6 +513,15 @@ def test(model, data_loader, device, savepath='results', create_figs=False, debu
     print(f"Mean Delta Yaw Error: {np.mean(delta_yaws)}")
     print(f"Standard Deviation of Delta Yaw Error: {np.std(delta_yaws)}")
     print(f"Median Delta Yaw Error: {np.median(delta_yaws)}")
+
+    # Show an histogram of the delta_yaw errors
+    plt.figure()
+    plt.hist(delta_yaws, bins=20, color='skyblue', edgecolor='black', linewidth=1.2)
+    plt.title('Histogram of Delta Yaw Errors')
+    plt.xlabel('Delta Yaw Error (degrees)')
+    plt.ylabel('Frequency')
+    plt.grid(axis='y', alpha=0.75)
+    plt.savefig(os.path.join(results_dir, 'delta_yaws_hist.png'), dpi=300, bbox_inches='tight')
 
     # Save results to a text file
     np.savetxt(os.path.join(results_dir, 'delta_yaws.txt'), delta_yaws, header="Delta Yaws (degrees)")
