@@ -95,7 +95,9 @@ class CroDINO(nn.Module):
         x2_dino = self.norm(x2_dino)
 
         x1_dino = x1_dino[:, 1:, :]
+        x1_cls = x1_dino[:, :1, :]
         x2_dino = x2_dino[:, 1:, :]
+        x2_cls = x2_dino[:, :1, :]
 
         
         if debug:
@@ -103,6 +105,8 @@ class CroDINO(nn.Module):
             print("x2_img shape: ", x2.shape)
             print("x1_dino shape: ", x1_dino.shape)
             print("x2_dino shape: ", x2_dino.shape)
+            print("x1_cls shape: ", x1_cls.shape)
+            print("x2_cls shape: ", x2_cls.shape)
 
         # CroDINO Processing
         x1 = self.prepare_tokens(x1, img_cls=1, debug=True)
@@ -114,7 +118,8 @@ class CroDINO(nn.Module):
             x = blk(x)
         
         # Final single-head attention
-        _, final_attn = self.final_attention(x)         # NOTE: I'm computing the attention without affecting the patches 
+        # _, final_attn = self.final_attention(x)         # NOTE: I'm computing the attention without affecting the patches 
+        final_attn = 0
         
         x = self.norm(x)
         x = self.head(x)

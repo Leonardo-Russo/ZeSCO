@@ -366,8 +366,9 @@ def test(model, data_loader, device, savepath='results', create_figs=False, debu
     delta_yaws_combined = []
 
     threshold = 0.4
+    batch_size = data_loader.batch_size
 
-    with tqdm(enumerate(data_loader), total=len(data_loader), desc="Processing Batches") as pbar:
+    with tqdm(enumerate(data_loader), total=len(data_loader)*batch_size, desc="Processing Batches") as pbar:
         for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in pbar:
             ground_images = ground_images.to(device)
             aerial_images = aerial_images.to(device)
@@ -507,6 +508,8 @@ def test(model, data_loader, device, savepath='results', create_figs=False, debu
                 # Update pbar to show current delta_yaws average
                 pbar.set_postfix({'Delta Yaw': np.mean(delta_yaws)})
                 pbar.update()
+
+    pbar.close()
 
     # Output the delta_yaw errors
     delta_yaws = np.array(delta_yaws)

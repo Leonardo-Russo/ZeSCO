@@ -104,12 +104,59 @@ def extract_cutout_from_360(image, fov=(90, 180), yaw=180, pitch=90, debug=False
     return cutout
 
 
+def polar_transform(image, target_size):
+    """
+    Applies a polar transformation to the aerial image to match the dimensions of the ground image.
+
+    Args:
+    - image: The input aerial image (PIL Image).
+    - target_size: The desired output size (height, width) after the polar transformation.
+
+    Returns:
+    - transformed_image: The polar-transformed aerial image (PIL Image).
+    """
+
+    # Convert PIL Image to NumPy array
+    image_np = np.array(image)
+
+    # Rearrange the shape from (3, height, width) to (height, width, 3)
+    if image_np.shape[0] == 3:
+        image_np = np.transpose(image_np, (1, 2, 0))
+
+    # Get the original image size and the target size
+    Sa = image_np.shape[0]  # Assuming square aerial image
+    Hg, Wg = target_size
+
+    # Create the polar transformed image
+    transformed_image_np = np.zeros((Hg, Wg, 3), dtype=np.uint8)  # 3 channels for RGB
+
+    for i in range(Hg):
+        for j in range(Wg):
+            # Calculate the corresponding coordinates in the original aerial image
+            xa = int(Sa / 2 - (Sa / 2) * ((Hg - i) / Hg) * np.cos(2 * np.pi * j / Wg))
+            ya = int(Sa / 2 + (Sa / 2) * ((Hg - i) / Hg) * np.sin(2 * np.pi * j / Wg))
+
+            # Ensure coordinates are within bounds
+            xa = max(0, min(xa, Sa - 1))
+            ya = max(0, min(ya, Sa - 1))
+
+            # Copy the pixel value from the original to the transformed image
+            transformed_image_np[i, j] = image_np[ya, xa]
+
+    # Convert NumPy array back to PIL Image
+    transformed_image = Image.fromarray(transformed_image_np)
+
+    return transformed_image
+
+
 class PairedImagesDataset(Dataset):
-    def __init__(self, filenames, transform_aerial=None, transform_ground=None, cutout_from_pano=True):
+    def __init__(self, filenames, transform_aerial=None, transform_ground=None, cutout_from_pano=True, apply_polar_transform=False, image_size=224):
         self.filenames = filenames
         self.transform_aerial = transform_aerial
         self.transform_ground = transform_ground
         self.cutout_from_pano = cutout_from_pano
+        self.apply_polar_transform = apply_polar_transform
+        self.image_size = image_size
 
     def __len__(self):
         return len(self.filenames)
@@ -133,6 +180,16 @@ class PairedImagesDataset(Dataset):
             ground_image = self.transform_ground(ground_image)
 
         if self.transform_aerial:
-            aerial_image = self.transform_aerial(aerial_image)
+            if self.apply_polar_transform:
+                transform_aerial = transforms.Compose([
+                    transforms.Resize((self.image_size, self.image_size)),
+                    transforms.CenterCrop((self.image_size, self.image_size))
+                ])
+                to_tensor = transforms.ToTensor()
+                aerial_image = transform_aerial(aerial_image)
+                aerial_image = polar_transform(aerial_image, (self.image_size, self.image_size))
+                aerial_image = to_tensor(aerial_image)
+            else:
+                aerial_image = self.transform_aerial(aerial_image)
 
         return ground_image, aerial_image, fov, yaw, pitch
