@@ -348,10 +348,10 @@ def get_averaged_radial_tokens(angle_step, normalized_features2, grid_size, sky_
 
     return averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens
 
-def test(model, data_loader, device, savepath='results', create_figs=False, debug=False):
+def test(model, data_loader, device, savepath='untitled', create_figs=False, debug=False):
 
     # Create results directory if it doesn't exist
-    results_dir = savepath
+    results_dir = os.path.join('results', savepath)
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
 
@@ -537,7 +537,7 @@ def test(model, data_loader, device, savepath='results', create_figs=False, debu
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test CRODINO')
-    parser.add_argument('--save_path', '-p', type=str, default='results', help='Path to save the model and results')
+    parser.add_argument('--save_path', '-p', type=str, default='untitled', help='Path to save the model and results')
     parser.add_argument('--debug', '-d', type=str, default='False', help='Debug mode')
     parser.add_argument('--create_figs', '-s', type=str, default='False', help='Create figures')
     args = parser.parse_args()
