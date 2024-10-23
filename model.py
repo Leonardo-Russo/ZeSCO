@@ -18,6 +18,9 @@ from utils import *
 import torch.nn.functional as F
 import math
 
+from transformers import CLIPProcessor, CLIPModel
+from sklearn.preprocessing import normalize
+
 import warnings
 warnings.simplefilter("ignore", category=UserWarning)
         
@@ -222,6 +225,48 @@ def get_patch_embeddings(model, x):
         x = blk(x)
     x = model.norm(x)
     return x
+
+
+class CLIP(nn.Module):
+    def __init__(self, model_name="openai/clip-vit-base-patch32", patch_size=16, device="cuda"):
+        super(CLIP, self).__init__()
+        self.device = device
+        self.model = CLIPModel.from_pretrained(model_name).to(self.device)
+        self.processor = CLIPProcessor.from_pretrained(model_name)
+        self.patch_size = patch_size
+
+    def forward(self, ground_image, aerial_image, debug=False):
+        ground_inputs = self.processor(images=ground_image, return_tensors="pt", do_rescale=False).to(self.device)
+        aerial_inputs = self.processor(images=aerial_image, return_tensors="pt", do_rescale=False).to(self.device)
+
+        # Get the intermediate feature maps (replace '11' with the desired layer)
+        ground_features = self.model.vision_model(pixel_values=ground_inputs["pixel_values"]).last_hidden_state.detach()
+        aerial_features = self.model.vision_model(pixel_values=aerial_inputs["pixel_values"]).last_hidden_state.detach()
+
+        ground_cls = ground_features[:, 0, :]
+        aerial_cls = aerial_features[:, 0, :]
+
+        ground_tokens = ground_features[:, 1:, :].squeeze()
+        aerial_tokens = aerial_features[:, 1:, :].squeeze()
+
+        if debug:
+            print("ground_tokens shape: ", ground_tokens.shape)
+            print("ground_cls shape: ", ground_cls.shape)
+
+        # Normalize the embeddings
+        ground_tokens = normalize(ground_tokens.cpu().numpy(), axis=1)
+        aerial_tokens = normalize(aerial_tokens.cpu().numpy(), axis=1)
+
+        # # Reshape to get the 2D map [batch_size, height, width, channels]
+        # ground_tokens = ground_tokens.reshape(int(ground_tokens.shape[0]**0.5), int(ground_tokens.shape[0]**0.5), ground_tokens.shape[-1])
+        # aerial_tokens = aerial_tokens.reshape(int(aerial_tokens.shape[0]**0.5), int(aerial_tokens.shape[0]**0.5), aerial_tokens.shape[-1])
+
+        if debug:
+            print("ground_tokens shape: ", ground_tokens.shape)
+            print("aerial_features shape: ", aerial_tokens.shape)
+
+        return ground_tokens, aerial_tokens
+
 
 # reg
 class Dinov2Matcher:

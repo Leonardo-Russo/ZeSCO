@@ -18,7 +18,7 @@ import argparse
 from tqdm import tqdm
 
 from dataset import PairedImagesDataset, sample_paired_images
-from model import CroDINO, Dinov2Matcher, CosineSimilarityLoss, get_combined_embedding_visualization_all
+from model import CroDINO, CLIP, CosineSimilarityLoss, get_combined_embedding_visualization_all
 from skyfilter import SkyFilter
 
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
@@ -242,12 +242,10 @@ def find_alignment(fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tok
             back_rad_token = back_rad_avg_tokens[int(j + i - grid_size/2) % back_rad_avg_tokens.shape[0]]
             # print(f"beta: {beta:.2f} \tangle: {(j + i - grid_size/2)*angle_step} \tindex: {int(j + i - grid_size/2) % averaged_radial_tokens.shape[0]}")       
 
-            vert_avg_tokens = np.vstack((fore_vert_avg_tokens[(grid_size-1)-i], midd_vert_avg_tokens[(grid_size-1)-i], back_vert_avg_tokens[(grid_size-1)-i]))
-            # vert_avg_tokens = np.vstack((fore_vert_avg_tokens[i-1], midd_vert_avg_tokens[i-1], back_vert_avg_tokens[i-1]))
+            vert_avg_tokens = np.vstack((fore_vert_avg_tokens[(grid_size-1)-i], midd_vert_avg_tokens[(grid_size-1)-i], back_vert_avg_tokens[(grid_size-1)-i]))            
             rad_tokens = np.vstack((fore_rad_token, midd_rad_token, back_rad_token))
 
             cone_distance += np.linalg.norm((1 - np.dot(vert_avg_tokens, np.transpose(rad_tokens))))       # cosine distance
-            # cone_distance += np.linalg.norm((1 - np.dot(fore_rad_token, np.transpose(fore_vert_avg_tokens[(grid_size-1)-i]))))       # cosine distance
 
         cone_distance /= grid_size
         if cone_distance < min_distance:
@@ -348,7 +346,7 @@ def get_averaged_radial_tokens(angle_step, normalized_features2, grid_size, sky_
 
     return averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens
 
-def test(model, data_loader, device, savepath='untitled', create_figs=False, debug=False):
+def test(model, model_name, data_loader, device, savepath='untitled', create_figs=False, debug=False):
 
     # Create results directory if it doesn't exist
     results_dir = os.path.join('results', savepath)
@@ -363,12 +361,11 @@ def test(model, data_loader, device, savepath='untitled', create_figs=False, deb
     depth_model = AutoModelForDepthEstimation.from_pretrained("LiheYoung/depth-anything-small-hf")
 
     delta_yaws = []
-    delta_yaws_combined = []
 
     threshold = 0.4
     batch_size = data_loader.batch_size
 
-    with tqdm(enumerate(data_loader), total=len(data_loader)*batch_size, desc="Processing Batches") as pbar:
+    with tqdm(enumerate(data_loader), total=len(data_loader), desc="Processing Batches") as pbar:
         for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in pbar:
             ground_images = ground_images.to(device)
             aerial_images = aerial_images.to(device)
@@ -390,7 +387,17 @@ def test(model, data_loader, device, savepath='untitled', create_figs=False, deb
                 pitch = pitchs[i].item()
                 
                 # Compute the output of the model
-                ground_tokens, aerial_tokens, _ = model(ground_image, aerial_image, debug=False)
+                if model_name == "DINOv2":
+                    ground_tokens, aerial_tokens, _ = model(ground_image, aerial_image, debug=False)
+                    grid_size = 16
+                    # Normalize the features
+                    normalized_features1 = normalize(ground_tokens.squeeze().detach().cpu().numpy(), axis=1)
+                    normalized_features2 = normalize(aerial_tokens.squeeze().detach().cpu().numpy(), axis=1)
+                elif model_name == "CLIP":
+                    ground_tokens, aerial_tokens = model(ground_image, aerial_image, debug=False)
+                    grid_size = 7
+                    normalized_features1 = ground_tokens.squeeze()
+                    normalized_features2 = aerial_tokens.squeeze()
 
                 if debug:
                     print("fov", fov)
@@ -411,14 +418,11 @@ def test(model, data_loader, device, savepath='untitled', create_figs=False, deb
                 aerial_image_vis = aerial_image_vis.astype(np.uint8)
 
                 # Apply sky filter
-                ground_image_no_sky, sky_mask, sky_grid = apply_sky_filter(sky_filter, ground_image_vis, grid_size=16, debug=False)
+                ground_image_no_sky, sky_mask, sky_grid = apply_sky_filter(sky_filter, ground_image_vis, grid_size=grid_size, debug=False)
 
                 # Apply depth estimation
-                depth_map, depth_map_grid = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, debug=False)
+                depth_map, depth_map_grid = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, grid_size=grid_size, debug=False)
 
-                # Normalize the features
-                normalized_features1 = normalize(ground_tokens.squeeze().detach().cpu().numpy(), axis=1)
-                normalized_features2 = normalize(aerial_tokens.squeeze().detach().cpu().numpy(), axis=1)
                 if debug:
                     print("normalized_features1.shape:", normalized_features1.shape)
                     print("normalized_features2.shape:", normalized_features2.shape)
@@ -537,6 +541,7 @@ def test(model, data_loader, device, savepath='untitled', create_figs=False, deb
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test CRODINO')
+    parser.add_argument('--model', '-m', type=str, default='DINOv2', help='Model to use')
     parser.add_argument('--save_path', '-p', type=str, default='untitled', help='Path to save the model and results')
     parser.add_argument('--debug', '-d', type=str, default='False', help='Debug mode')
     parser.add_argument('--create_figs', '-s', type=str, default='False', help='Create figures')
@@ -573,8 +578,11 @@ if __name__ == '__main__':
     print(f"Using device: {device}")
 
     # Load the Model
-    repo_name="facebookresearch/dinov2"
-    model_name="dinov2_vitb14"
-    model = CroDINO(repo_name, model_name, pretrained=True).to(device)
+    if args.model == "DINOv2":
+        repo_name="facebookresearch/dinov2"
+        model_name="dinov2_vitb14"
+        model = CroDINO(repo_name, model_name, pretrained=True).to(device)
+    elif args.model == "CLIP":
+        model = CLIP().to(device)
 
-    test(model, data_loader, device, savepath=args.save_path, create_figs=args.create_figs.lower() == 'true', debug=args.debug.lower() == 'true')
+    test(model, args.model, data_loader, device, savepath=args.save_path, create_figs=args.create_figs.lower() == 'true', debug=args.debug.lower() == 'true')
