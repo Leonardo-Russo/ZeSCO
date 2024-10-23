@@ -18,7 +18,7 @@ import argparse
 from tqdm import tqdm
 import math
 
-from dataset import sample_paired_images
+from dataset import sample_cvusa_images
 
 import matplotlib
 matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
@@ -259,7 +259,7 @@ if __name__ == '__main__':
     
     # Sample paired images
     dataset_path = '/home/lrusso/cvusa/CVPR_subset'
-    train_filenames, val_filenames = sample_paired_images(dataset_path, sample_percentage=0.005, split_ratio=0.8, groundtype='panos')
+    train_filenames, val_filenames = sample_cvusa_images(dataset_path, sample_percentage=0.005, split_ratio=0.8, groundtype='panos')
 
     # Settings
     image_size = 224

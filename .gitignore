@@ -1,2 +1,3 @@
 models/**/*.pth
 model/model.onnx
+results/

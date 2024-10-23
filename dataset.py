@@ -16,7 +16,7 @@ import os
 import random
 
 
-def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, groundtype='panos'):
+def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, groundtype='panos'):
     """
     Function to sample a percentage of the dataset and split it into training and validation sets.
     
@@ -58,6 +58,48 @@ def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, g
     split_point = int(split_ratio * len(selected_filenames))
     train_filenames = selected_filenames[:split_point]
     val_filenames = selected_filenames[split_point:]
+
+    return train_filenames, val_filenames
+
+
+def sample_cities_images(dataset_path, sample_percentage=0.2, split_ratio=0.8):
+    """
+    Function to sample a percentage of the dataset and split it into training and validation sets.
+    
+    Parameters:
+        dataset_path (str): Path to the dataset root directory.
+        sample_percentage (float): Percentage of the dataset to sample.
+        split_ratio (float): Ratio to split the sampled data into training and validation sets.
+        
+    Returns:
+        train_filenames (list): List of training filenames (tuples of panorama and satellite image paths).
+        val_filenames (list): List of validation filenames (tuples of panorama and satellite image paths).
+    """
+
+    cities = [d for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))]
+    n_selected_cities = int(np.ceil(len(cities) * sample_percentage))
+    selected_cities = random.sample(cities, n_selected_cities)
+
+    paired_filenames = []
+    for city in selected_cities:
+        ground_dir = os.path.join(dataset_path, city, 'pano_images')
+        satellite_dir = os.path.join(dataset_path, city, 'sat_images')
+
+        for root, _, files in os.walk(ground_dir):
+            for file in files:
+                if file.endswith('.jpg'):
+                    ground_path = os.path.join(root, file)
+                    image_id = os.path.splitext(file)[0]                
+                    if image_id is None:
+                        continue
+                    sat_path = os.path.join(satellite_dir, f'{image_id}.jpg')
+                    if os.path.exists(sat_path):
+                        paired_filenames.append((ground_path, sat_path))
+    
+    random.shuffle(paired_filenames)
+    split_point = int(split_ratio * len(paired_filenames))
+    train_filenames = paired_filenames[:split_point]
+    val_filenames = paired_filenames[split_point:]
 
     return train_filenames, val_filenames
 

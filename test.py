@@ -17,7 +17,7 @@ import random
 import argparse
 from tqdm import tqdm
 
-from dataset import PairedImagesDataset, sample_paired_images
+from dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images
 from model import CroDINO, CLIP, CosineSimilarityLoss, get_combined_embedding_visualization_all
 from skyfilter import SkyFilter
 
@@ -365,7 +365,7 @@ def test(model, model_name, data_loader, device, savepath='untitled', create_fig
     threshold = 0.4
     batch_size = data_loader.batch_size
 
-    with tqdm(enumerate(data_loader), total=len(data_loader), desc="Processing Batches") as pbar:
+    with tqdm(enumerate(data_loader), total=len(data_loader)*batch_size, desc="Processing Batches") as pbar:
         for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in pbar:
             ground_images = ground_images.to(device)
             aerial_images = aerial_images.to(device)
@@ -542,14 +542,20 @@ def test(model, model_name, data_loader, device, savepath='untitled', create_fig
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test CRODINO')
     parser.add_argument('--model', '-m', type=str, default='DINOv2', help='Model to use')
+    parser.add_argument('--dataset', '-ds', type=str, default='Cities', help='Dataset to use')
     parser.add_argument('--save_path', '-p', type=str, default='untitled', help='Path to save the model and results')
     parser.add_argument('--debug', '-d', type=str, default='False', help='Debug mode')
     parser.add_argument('--create_figs', '-s', type=str, default='False', help='Create figures')
     args = parser.parse_args()
     
-    # Sample paired images
-    dataset_path = '/home/lrusso/cvusa/CVPR_subset'
-    train_filenames, val_filenames = sample_paired_images(dataset_path, sample_percentage=0.005, split_ratio=0.8, groundtype='panos')
+    # Get Dataset Images
+    dataset_name = args.dataset
+    if dataset_name == "CVUSA":
+        dataset_path = '/home/lrusso/cvusa/CVPR_subset'
+        train_filenames, val_filenames = sample_cvusa_images(dataset_path, sample_percentage=0.005, split_ratio=0.8, groundtype='panos')
+    elif dataset_name == "Cities":
+        dataset_path = '/home/lrusso/CV-Cities'
+        train_filenames, val_filenames = sample_cities_images(dataset_path, sample_percentage=0.005, split_ratio=0.1)
 
     # Settings
     image_size = 224
