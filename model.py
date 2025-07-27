@@ -17,255 +17,222 @@ import random
 from utils import *
 import torch.nn.functional as F
 import math
+import torchvision.models as models
 
 from transformers import CLIPProcessor, CLIPModel
 from sklearn.preprocessing import normalize
+from torchinfo import summary
 
 import warnings
 warnings.simplefilter("ignore", category=UserWarning)
         
-class SingleHeadAttention(nn.Module):
-    def __init__(self, embed_dim):
-        super(SingleHeadAttention, self).__init__()
-        self.qkv = nn.Linear(embed_dim, embed_dim * 3)
-        self.scale = (embed_dim // 1) ** -0.5  # Single head
-        self.attn_drop = nn.Dropout(0.1)
-        self.proj = nn.Linear(embed_dim, embed_dim)
-        self.proj_drop = nn.Dropout(0.1)
 
-    def forward(self, x):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, 1, C // 1).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn_weights = attn.clone()
-        attn = self.attn_drop(attn)
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x, attn_weights
+class CrossviewModel(nn.Module):
+    def __init__(self, backbone='dinov2', frozen=True, device=None):
+        super(CrossviewModel, self).__init__()
 
-class CroDINO(nn.Module):
-    def __init__(self, repo_name="facebookresearch/dinov2", model_name="dinov2_vitb14", pretrained=True):
-        super(CroDINO, self).__init__()
+        self.backbone = backbone
+        self.pretrained = frozen
+        self.device = device if device else "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.original_model = torch.hub.load(repo_name, model_name)
+        if backbone == 'dinov2':
 
-        self.patch_size = self.original_model.patch_size
-        self.interpolate_offset = self.original_model.interpolate_offset
-        self.interpolate_antialias = self.original_model.interpolate_antialias
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.original_model.to(self.device)
+            self.original_model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14")
+            self.patch_size = self.original_model.patch_size
+            self.interpolate_offset = self.original_model.interpolate_offset
+            self.interpolate_antialias = self.original_model.interpolate_antialias
+            self.original_model.to(self.device)
+            self.original_model.eval()
 
-        self.patch_embed = self.original_model.patch_embed
-        self.blocks = self.original_model.blocks
-        self.norm = self.original_model.norm
-        self.head = self.original_model.head
-        self.cls_token_1 = self.original_model.cls_token.clone()
-        self.cls_token_2 = self.original_model.cls_token.clone()
-        self.pos_embed_1 = self.original_model.pos_embed.clone()
-        self.pos_embed_2 = self.original_model.pos_embed.clone()
+            self.patch_embed = self.original_model.patch_embed
+            self.blocks = self.original_model.blocks
+            self.norm = self.original_model.norm
+            self.head = self.original_model.head
+            self.cls_token = self.original_model.cls_token.clone()
+            self.pos_embed = self.original_model.pos_embed.clone()
 
-        # Final single-head attention layer
-        embed_dim = self.original_model.patch_embed.proj.out_channels
-        self.final_attention = SingleHeadAttention(embed_dim)
+            if frozen:
+                for param in self.patch_embed.parameters():
+                    param.requires_grad = False
+                for param in self.blocks.parameters():
+                    param.requires_grad = False
+                for param in self.norm.parameters():
+                    param.requires_grad = False
+                for param in self.head.parameters():
+                    param.requires_grad = False
 
-        # Freeze parameters if pretrained
-        if pretrained:
-            for param in self.patch_embed.parameters():
-                param.requires_grad = False
-            for param in self.blocks.parameters():
-                param.requires_grad = False
-            for param in self.norm.parameters():
-                param.requires_grad = False
-            for param in self.head.parameters():
-                param.requires_grad = False
+        elif backbone == 'clip':
 
-    def forward(self, x1, x2, debug=False):
+            self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16").to(self.device)
+            self.patch_size = 16
+            self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
 
-        # -- Original Model Processing --- #
-        self.original_model.eval()
+        elif backbone == "resnet50":
 
-        x1_dino = self.prepare_tokens(x1, img_cls=1)
-        x2_dino = self.prepare_tokens(x2, img_cls=2)
+            self.patch_size = 32  # ResNet50 does not use patch embeddings, but we can set a dummy value
+            self.model = models.resnet50(pretrained=frozen)
+            self.feature_extractor = nn.Sequential(*list(self.model.children())[:-2])  # remove fully connected (FC) layers and keep convolutional feature extractor
 
-        for blk in self.blocks:
-            x1_dino = blk(x1_dino)
-            x2_dino = blk(x2_dino)
+            if frozen:
+                for param in self.feature_extractor.parameters():
+                    param.requires_grad = False
 
-        x1_dino = self.norm(x1_dino)
-        x2_dino = self.norm(x2_dino)
+    def _forward_clip(self, ground_image, aerial_image, debug):
 
-        x1_dino = x1_dino[:, 1:, :]
-        x1_cls = x1_dino[:, :1, :]
-        x2_dino = x2_dino[:, 1:, :]
-        x2_cls = x2_dino[:, :1, :]
+        ground_inputs = self.processor(images=ground_image, return_tensors="pt", do_rescale=False)
+        aerial_inputs = self.processor(images=aerial_image, return_tensors="pt", do_rescale=False)
 
-        
-        if debug:
-            print("x1_img shape: ", x1.shape)
-            print("x2_img shape: ", x2.shape)
-            print("x1_dino shape: ", x1_dino.shape)
-            print("x2_dino shape: ", x2_dino.shape)
-            print("x1_cls shape: ", x1_cls.shape)
-            print("x2_cls shape: ", x2_cls.shape)
+        # Get the intermediate feature maps
+        ground_features = self.model.vision_model(pixel_values=ground_inputs["pixel_values"].to(self.device)).last_hidden_state.detach()
+        aerial_features = self.model.vision_model(pixel_values=aerial_inputs["pixel_values"].to(self.device)).last_hidden_state.detach()
 
-        # CroDINO Processing
-        x1 = self.prepare_tokens(x1, img_cls=1, debug=True)
-        x2 = self.prepare_tokens(x2, img_cls=2)
-        x = torch.cat((x1, x2), dim=1)
-        
-        # Process through transformer blocks
-        for blk in self.blocks:
-            x = blk(x)
-        
-        # Final single-head attention
-        _, final_attn = self.final_attention(x)         # NOTE: I'm computing the attention without affecting the patches 
-        # final_attn = 0
-        
-        x = self.norm(x)
-        x = self.head(x)
-        
-        return x1_dino, x2_dino, final_attn
-    
-
-    def interpolate_pos_encoding(self, x, img_cls, w, h):
-
-        if img_cls == 1:
-            previous_dtype = x.dtype
-            npatch = x.shape[1] - 1
-            N = self.pos_embed_1.shape[1] - 1
-            if npatch == N and w == h:
-                return self.pos_embed_1
-            pos_embed = self.pos_embed_1.float()
-            class_pos_embed = pos_embed[:, 0]
-            patch_pos_embed = pos_embed[:, 1:]
-            dim = x.shape[-1]
-            w0 = w // self.patch_size
-            h0 = h // self.patch_size
-            M = int(math.sqrt(N))  # Recover the number of patches in each dimension
-            assert N == M * M
-            kwargs = {}
-            if self.interpolate_offset:
-                # Historical kludge: add a small number to avoid floating point error in the interpolation, see https://github.com/facebookresearch/dino/issues/8
-                # Note: still needed for backward-compatibility, the underlying operators are using both output size and scale factors
-                sx = float(w0 + self.interpolate_offset) / M
-                sy = float(h0 + self.interpolate_offset) / M
-                kwargs["scale_factor"] = (sx, sy)
-            else:
-                # Simply specify an output size instead of a scale factor
-                kwargs["size"] = (w0, h0)
-            patch_pos_embed = nn.functional.interpolate(
-                patch_pos_embed.reshape(1, M, M, dim).permute(0, 3, 1, 2),
-                mode="bicubic",
-                antialias=self.interpolate_antialias,
-                **kwargs,
-            )
-            assert (w0, h0) == patch_pos_embed.shape[-2:]
-            patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
-            return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
-        
-        elif img_cls == 2:
-            previous_dtype = x.dtype
-            npatch = x.shape[1] - 1
-            N = self.pos_embed_2.shape[1] - 1
-            if npatch == N and w == h:
-                return self.pos_embed_2
-            pos_embed = self.pos_embed_2.float()
-            class_pos_embed = pos_embed[:, 0]
-            patch_pos_embed = pos_embed[:, 1:]
-            dim = x.shape[-1]
-            w0 = w // self.patch_size
-            h0 = h // self.patch_size
-            M = int(math.sqrt(N))  # Recover the number of patches in each dimension
-            assert N == M * M
-            kwargs = {}
-            if self.interpolate_offset:
-                # Historical kludge: add a small number to avoid floating point error in the interpolation, see https://github.com/facebookresearch/dino/issues/8
-                # Note: still needed for backward-compatibility, the underlying operators are using both output size and scale factors
-                sx = float(w0 + self.interpolate_offset) / M
-                sy = float(h0 + self.interpolate_offset) / M
-                kwargs["scale_factor"] = (sx, sy)
-            else:
-                # Simply specify an output size instead of a scale factor
-                kwargs["size"] = (w0, h0)
-            patch_pos_embed = nn.functional.interpolate(
-                patch_pos_embed.reshape(1, M, M, dim).permute(0, 3, 1, 2),
-                mode="bicubic",
-                antialias=self.interpolate_antialias,
-                **kwargs,
-            )
-            assert (w0, h0) == patch_pos_embed.shape[-2:]
-            patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
-            return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
-        
-        else:
-            return sys.exit("Invalid image class")
-        
-    
-    def prepare_tokens(self, x, img_cls, debug=False):
-        B, nc, w, h = x.shape
-        x = self.patch_embed(x)
-
-        if img_cls == 1:
-            x = torch.cat((self.cls_token_1.to(self.device).expand(x.shape[0], -1, -1), x), dim=1)
-        elif img_cls == 2:
-            x = torch.cat((self.cls_token_2.to(self.device).expand(x.shape[0], -1, -1), x), dim=1)
-        
-        x = x + self.interpolate_pos_encoding(x, img_cls, w, h).to(self.device)
-
-        return x
-
-        
-
-def get_patch_embeddings(model, x):
-    x = model.patch_embed(x)
-    for blk in model.blocks:
-        x = blk(x)
-    x = model.norm(x)
-    return x
-
-
-class CLIP(nn.Module):
-    def __init__(self, model_name="openai/clip-vit-base-patch32", patch_size=16, device="cuda"):
-        super(CLIP, self).__init__()
-        self.device = device
-        self.model = CLIPModel.from_pretrained(model_name).to(self.device)
-        self.processor = CLIPProcessor.from_pretrained(model_name)
-        self.patch_size = patch_size
-
-    def forward(self, ground_image, aerial_image, debug=False):
-        ground_inputs = self.processor(images=ground_image, return_tensors="pt", do_rescale=False).to(self.device)
-        aerial_inputs = self.processor(images=aerial_image, return_tensors="pt", do_rescale=False).to(self.device)
-
-        # Get the intermediate feature maps (replace '11' with the desired layer)
-        ground_features = self.model.vision_model(pixel_values=ground_inputs["pixel_values"]).last_hidden_state.detach()
-        aerial_features = self.model.vision_model(pixel_values=aerial_inputs["pixel_values"]).last_hidden_state.detach()
-
-        ground_cls = ground_features[:, 0, :]
-        aerial_cls = aerial_features[:, 0, :]
-
-        ground_tokens = ground_features[:, 1:, :].squeeze()
-        aerial_tokens = aerial_features[:, 1:, :].squeeze()
+        ground_tokens = ground_features[:, 1:, :]
+        aerial_tokens = aerial_features[:, 1:, :]
 
         if debug:
             print("ground_tokens shape: ", ground_tokens.shape)
-            print("ground_cls shape: ", ground_cls.shape)
+            print("ground_cls shape: ", ground_features[:, 0, :].shape)
 
-        # Normalize the embeddings
-        ground_tokens = normalize(ground_tokens.cpu().numpy(), axis=1)
-        aerial_tokens = normalize(aerial_tokens.cpu().numpy(), axis=1)
-
-        # # Reshape to get the 2D map [batch_size, height, width, channels]
-        # ground_tokens = ground_tokens.reshape(int(ground_tokens.shape[0]**0.5), int(ground_tokens.shape[0]**0.5), ground_tokens.shape[-1])
-        # aerial_tokens = aerial_tokens.reshape(int(aerial_tokens.shape[0]**0.5), int(aerial_tokens.shape[0]**0.5), aerial_tokens.shape[-1])
+        ground_tokens = F.normalize(ground_tokens, dim=-1)
+        aerial_tokens = F.normalize(aerial_tokens, dim=-1)
 
         if debug:
             print("ground_tokens shape: ", ground_tokens.shape)
             print("aerial_features shape: ", aerial_tokens.shape)
 
         return ground_tokens, aerial_tokens
+
+    def _forward_dinov2(self, ground_image, aerial_image, debug):
+
+        ground_tokens = self.prepare_tokens(ground_image)
+        aerial_tokens = self.prepare_tokens(aerial_image)
+
+        for blk in self.blocks:
+            ground_tokens = blk(ground_tokens)
+            aerial_tokens = blk(aerial_tokens)
+
+        ground_tokens = self.norm(ground_tokens)
+        aerial_tokens = self.norm(aerial_tokens)
+
+        ground_tokens = ground_tokens[:, 1:, :]
+        ground_cls = ground_tokens[:, :1, :]
+        aerial_tokens = aerial_tokens[:, 1:, :]
+        aerial_cls = aerial_tokens[:, :1, :]
+
+        
+        if debug:
+            print("x1_img shape: ", ground_image.shape)
+            print("x2_img shape: ", aerial_image.shape)
+            print("x1_dino shape: ", ground_tokens.shape)
+            print("x2_dino shape: ", aerial_tokens.shape)
+            print("x1_cls shape: ", ground_cls.shape)
+            print("x2_cls shape: ", aerial_cls.shape)
+
+        return ground_tokens, aerial_tokens
+    
+    def _forward_resnet50(self, ground_image, aerial_image, debug):
+
+        ground_features = self.feature_extractor(ground_image)
+        aerial_features = self.feature_extractor(aerial_image)
+
+        ground_tokens = ground_features.view(ground_features.size(0), -1, 2048)
+        aerial_tokens = aerial_features.view(aerial_features.size(0), -1, 2048)
+
+        return ground_tokens, aerial_tokens
+
+    def forward(self, ground_image, aerial_image, debug=False):
+        
+        if self.backbone == 'clip':
+            return self._forward_clip(ground_image, aerial_image, debug)
+        elif self.backbone == 'dinov2':
+            return self._forward_dinov2(ground_image, aerial_image, debug)
+        elif self.backbone == 'resnet50':
+            return self._forward_resnet50(ground_image, aerial_image, debug)
+        else:
+            raise ValueError("Unsupported backbone: {}".format(self.backbone))
+        
+    def prepare_tokens(self, x, debug=False):
+        B, nc, w, h = x.shape
+        x = self.patch_embed(x)
+        x = torch.cat((self.cls_token.to(self.device).expand(x.shape[0], -1, -1), x), dim=1)
+        x = x + self.interpolate_pos_encoding(x, w, h).to(self.device)
+        return x
+    
+    def get_patch_embeddings(self, x):
+        x = self.patch_embed(x)
+        for blk in self.blocks:
+            x = blk(x)
+        x = self.norm(x)
+        return x
+
+    def interpolate_pos_encoding(self, x, w, h):
+        pos_embed = self.pos_embed.float()
+        class_pos_embed = pos_embed[:, 0]
+        patch_pos_embed = pos_embed[:, 1:]
+        dim = x.shape[-1]
+        M = int(math.sqrt(patch_pos_embed.shape[1]))
+        w0 = w // self.patch_size
+        h0 = h // self.patch_size
+        patch_pos_embed = nn.functional.interpolate(
+            patch_pos_embed.reshape(1, M, M, dim).permute(0, 3, 1, 2),
+            size=(w0, h0),
+            mode="bicubic",
+            align_corners=False
+        ).permute(0, 2, 3, 1).view(1, -1, dim)
+        return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1)
+    
+    def show(self):
+        print("\n\n=====================================================================================\n")
+        print(self)
+        if self.backbone == "cnn":
+            summary(self, input_size=(16, 512, 512, 3))
+        else:
+            summary(self)
+
+    def get_embedding_visualization(self, tokens, grid_size):
+        pca = PCA(n_components=3)
+        reduced_tokens = pca.fit_transform(tokens.astype(np.float32))
+        reduced_tokens = reduced_tokens.reshape((*grid_size, -1))
+        normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
+        return normalized_tokens
+    
+    def show_tokens(self, imgs_tokens, grid_shape=None, mode="show", results_path=None, dpi=300):
+
+        B, n, C = imgs_tokens.shape
+        n_patches = int(math.sqrt(n))
+
+        if grid_shape is None:
+            side = int(np.ceil(np.sqrt(B)))
+            grid_shape = (side, side)
+
+        fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(grid_shape[1]*4, grid_shape[0]*4))
+        if isinstance(axes, np.ndarray):
+            axes = axes.flatten()
+        else:
+            axes = np.array([axes])
+
+        for i in range(B):
+            ax = axes[i]
+            img_tokens = imgs_tokens[i, :, :].detach().cpu().numpy()
+            
+            ax.axis('off')
+
+            vis_tokens = self.get_embedding_visualization(img_tokens, (n_patches, n_patches))
+            ax.imshow(vis_tokens)
+
+        # Hide any remaining axes
+        for j in range(B, len(axes)):
+            axes[j].axis('off')
+
+        fig.tight_layout()
+
+        if mode == "save":
+            if results_path is None:
+                save_path = "tokens.png"
+            fig.savefig(save_path, dpi=dpi)
+            plt.close(fig)
+        elif mode == "show":
+            plt.show()
 
 
 # reg
@@ -277,9 +244,9 @@ class Dinov2Matcher:
         self.device = device
 
         if self.half_precision:
-            self.model = torch.hub.load(repo_or_dir=repo_name, model=model_name).half().to(self.device)
+            self.model = torch.hub.load(repo_or_dir=repo_name, model=model_name).half()
         else:
-            self.model = torch.hub.load(repo_or_dir=repo_name, model=model_name).to(self.device)
+            self.model = torch.hub.load(repo_or_dir=repo_name, model=model_name)
 
         self.model.eval()
 
@@ -289,7 +256,7 @@ class Dinov2Matcher:
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # imagenet defaults
         ])
 
-    def prepare_image(self, rgb_image_numpy):
+    def prepare_image(self, rgb_image_numpy, patch_size=None):
         image = Image.fromarray(rgb_image_numpy)
         image_tensor = self.transform(image)
         resize_scale = image.width / image_tensor.shape[2]
@@ -299,15 +266,18 @@ class Dinov2Matcher:
         cropped_width, cropped_height = width - width % self.model.patch_size, height - height % self.model.patch_size # crop a bit from right and bottom parts
         image_tensor = image_tensor[:, :cropped_height, :cropped_width]
 
-        grid_size = (cropped_height // self.model.patch_size, cropped_width // self.model.patch_size)
+        if patch_size is None:
+            grid_size = (cropped_height // self.model.patch_size, cropped_width // self.model.patch_size)
+        else:
+            grid_size = (cropped_height // patch_size, cropped_width // patch_size)
         return image_tensor, grid_size, resize_scale
 
     def extract_features(self, image_tensor):
         with torch.inference_mode():
             if self.half_precision:
-                image_batch = image_tensor.unsqueeze(0).half().to(self.device)
+                image_batch = image_tensor.unsqueeze(0).half()
             else:
-                image_batch = image_tensor.unsqueeze(0).to(self.device)
+                image_batch = image_tensor.unsqueeze(0)
 
             tokens = self.model.get_intermediate_layers(image_batch)[0].squeeze()
         return tokens.cpu().numpy()

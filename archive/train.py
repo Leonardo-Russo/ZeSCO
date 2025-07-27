@@ -9,7 +9,7 @@ from PIL import ImageFile
 from tqdm import tqdm
 import numpy as np
 from dataset import PairedImagesDataset, sample_cvusa_images
-from model import CroDINO, CosineSimilarityLoss
+from model import CrossviewModel, CosineSimilarityLoss
 
 def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=1, save_path='untitled', debug=False):
     model.to(device)
@@ -172,7 +172,7 @@ if __name__ == '__main__':
     # Initialize the model
     repo_name="facebookresearch/dinov2"
     model_name="dinov2_vitb14"
-    model = CroDINO(repo_name, model_name, pretrained=False).to(device)
+    model = CrossviewModel(repo_name, model_name, frozen=False).to(device)
     print(model)
 
 

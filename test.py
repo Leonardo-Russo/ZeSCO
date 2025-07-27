@@ -13,11 +13,16 @@ from tqdm import tqdm
 
 from dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images
 from dataloader_vigor import DataLoader_VIGOR
-from model import CroDINO, CLIP
+from model import CrossviewModel
 from skyfilter import SkyFilter
 
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 import requests
+
+import warnings
+from transformers import logging
+logging.set_verbosity_error()
+warnings.filterwarnings("ignore")
 
 import matplotlib
 # matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
@@ -341,7 +346,7 @@ def get_averaged_radial_tokens(angle_step, normalized_features2, grid_size, sky_
 
     return averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens
 
-def test(model, model_name, data_loader, device, savepath='untitled', create_figs=False, debug=False):
+def test(model, backbone, data_loader, device, savepath='untitled', create_figs=False, debug=False):
 
     # Create results directory if it doesn't exist
     results_dir = os.path.join('results', savepath)
@@ -381,27 +386,21 @@ def test(model, model_name, data_loader, device, savepath='untitled', create_fig
                 yaw = yaws[i].item()
                 pitch = pitchs[i].item()
                 
-                # Compute the output of the model
-                if model_name == "DINOv2":
-                    ground_tokens, aerial_tokens, _ = model(ground_image, aerial_image, debug=False)
-                    grid_size = 16
-                    # Normalize the features
-                    normalized_features1 = normalize(ground_tokens.squeeze().detach().cpu().numpy(), axis=1)
-                    normalized_features2 = normalize(aerial_tokens.squeeze().detach().cpu().numpy(), axis=1)
-                elif model_name == "CLIP":
-                    ground_tokens, aerial_tokens = model(ground_image, aerial_image, debug=False)
-                    grid_size = 7
-                    normalized_features1 = ground_tokens.squeeze()
-                    normalized_features2 = aerial_tokens.squeeze()
-
+                # Forward pass through the model
+                ground_tokens, aerial_tokens = model(ground_image, aerial_image, debug=False)
+                normalized_features1 = ground_tokens.squeeze().detach().cpu().numpy()
+                normalized_features2 = aerial_tokens.squeeze().detach().cpu().numpy()
+                
+                # Calculate grid size from actual token dimensions
+                grid_size = int(np.sqrt(normalized_features1.shape[0]))  # assuming square grid
+                
                 if debug:
                     print("fov", fov)
                     print("yaw", yaw)
                     print("pitch", pitch)
-
-                # Calculate the number of patches for ground and aerial images
-                num_patches_ground = (ground_image.shape[-1] // model.patch_size) * (ground_image.shape[-2] // model.patch_size)
-                num_patches_aerial = (aerial_image.shape[-1] // model.patch_size) * (aerial_image.shape[-2] // model.patch_size)
+                    print("normalized_features1.shape:", normalized_features1.shape)
+                    print("normalized_features2.shape:", normalized_features2.shape)
+                    print("grid_size:", grid_size)
 
                 # Convert images to numpy for visualization
                 ground_image_np = ground_image.squeeze().permute(1, 2, 0).detach().cpu().numpy()
@@ -417,14 +416,6 @@ def test(model, model_name, data_loader, device, savepath='untitled', create_fig
 
                 # Apply depth estimation
                 depth_map, depth_map_grid = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, grid_size=grid_size, debug=False)
-
-                if debug:
-                    print("normalized_features1.shape:", normalized_features1.shape)
-                    print("normalized_features2.shape:", normalized_features2.shape)
-
-                grid_size = int(np.sqrt(normalized_features1.shape[0]))  # assuming square grid
-                if debug:
-                    print("grid_size:", grid_size)
 
                 fov_x = 90                          # horizontal fov in degrees
                 angle_step = fov_x / grid_size
@@ -536,7 +527,7 @@ def test(model, model_name, data_loader, device, savepath='untitled', create_fig
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test CRODINO')
-    parser.add_argument('--model', '-m', type=str, default='DINOv2', help='Model to use')
+    parser.add_argument('--backbone', '-b', type=str, default='dinov2', help='Model to use')
     parser.add_argument('--dataset', '-d', type=str, default='cvusa', help='Dataset to use')
     parser.add_argument('--save_path', '-p', type=str, default='untitled', help='Path to save the model and results')
     parser.add_argument('--debug', '-db', type=str, default='False', help='Debug mode')
@@ -597,11 +588,6 @@ if __name__ == '__main__':
     print(f"Using device: {device}")
 
     # Load the Model
-    if args.model == "DINOv2":
-        repo_name="facebookresearch/dinov2"
-        model_name="dinov2_vitb14"
-        model = CroDINO(repo_name, model_name, pretrained=True).to(device)
-    elif args.model == "CLIP":
-        model = CLIP().to(device)
+    model = CrossviewModel(backbone=args.backbone, frozen=True).to(device)
 
-    test(model, args.model, data_loader, device, savepath=args.save_path, create_figs=args.create_figs.lower() == 'true', debug=args.debug.lower() == 'true')
+    test(model, args.backbone, data_loader, device, savepath=args.save_path, create_figs=args.create_figs.lower() == 'true', debug=args.debug.lower() == 'true')
