@@ -1,16 +1,10 @@
-from PIL import Image
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import transforms
+import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
-import cv2
-import sys
-from sklearn.neighbors import NearestNeighbors
-from sklearn.decomposition import PCA
 from sklearn.preprocessing import normalize
-from matplotlib.patches import ConnectionPatch
 from torch.utils.data import Dataset, DataLoader
 import os
 import random
@@ -18,14 +12,15 @@ import argparse
 from tqdm import tqdm
 
 from dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images
-from model import CroDINO, CLIP, CosineSimilarityLoss, get_combined_embedding_visualization_all
+from dataloader_vigor import DataLoader_VIGOR
+from model import CroDINO, CLIP
 from skyfilter import SkyFilter
 
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 import requests
 
 import matplotlib
-matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
+# matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
 
 
 def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=False):
@@ -542,9 +537,9 @@ def test(model, model_name, data_loader, device, savepath='untitled', create_fig
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test CRODINO')
     parser.add_argument('--model', '-m', type=str, default='DINOv2', help='Model to use')
-    parser.add_argument('--dataset', '-ds', type=str, default='Cities', help='Dataset to use')
+    parser.add_argument('--dataset', '-d', type=str, default='VIGOR', help='Dataset to use')
     parser.add_argument('--save_path', '-p', type=str, default='untitled', help='Path to save the model and results')
-    parser.add_argument('--debug', '-d', type=str, default='False', help='Debug mode')
+    parser.add_argument('--debug', '-db', type=str, default='False', help='Debug mode')
     parser.add_argument('--create_figs', '-s', type=str, default='False', help='Create figures')
     args = parser.parse_args()
     
@@ -553,9 +548,26 @@ if __name__ == '__main__':
     if dataset_name == "CVUSA":
         dataset_path = '/home/lrusso/cvusa/CVPR_subset'
         train_filenames, val_filenames = sample_cvusa_images(dataset_path, sample_percentage=0.005, split_ratio=0.8, groundtype='panos')
-    elif dataset_name == "Cities":
+    elif dataset_name == "CITIES":
         dataset_path = '/home/lrusso/CV-Cities'
         train_filenames, val_filenames = sample_cities_images(dataset_path, sample_percentage=0.005, split_ratio=0.1)
+    elif dataset_name == "GLOBAL":
+        dataset_path = '/home/lrusso/CV-GLOBAL'
+        train_filenames, val_filenames = sample_cities_images(dataset_path, sample_percentage=0.005, split_ratio=0.1)
+    elif dataset_name == "VIGOR":
+        data_loader = DataLoader_VIGOR(mode='train')
+        train_filenames = data_loader.train_list
+        train_labels = data_loader.train_label
+        print("Training Filename 0:")
+        print(train_filenames[0])
+        print(train_labels[0])
+        
+
+        # # Access and print testing filenames
+        # test_filenames = data_loader.test_list
+        # print("\nTesting Filenames:")
+        # for filename in test_filenames:
+        #     print(filename)
 
     # Settings
     image_size = 224
@@ -573,7 +585,7 @@ if __name__ == '__main__':
         transforms.Resize((image_size*aerial_scaling, image_size*aerial_scaling)),
         transforms.CenterCrop((image_size, image_size)),
         transforms.ToTensor()
-    ])
+    ])    
 
     # Instantiate the dataset and dataloader
     paired_dataset = PairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground, cutout_from_pano=True)

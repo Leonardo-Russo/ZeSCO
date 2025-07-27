@@ -121,8 +121,8 @@ class CroDINO(nn.Module):
             x = blk(x)
         
         # Final single-head attention
-        # _, final_attn = self.final_attention(x)         # NOTE: I'm computing the attention without affecting the patches 
-        final_attn = 0
+        _, final_attn = self.final_attention(x)         # NOTE: I'm computing the attention without affecting the patches 
+        # final_attn = 0
         
         x = self.norm(x)
         x = self.head(x)

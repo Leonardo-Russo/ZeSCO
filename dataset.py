@@ -13,6 +13,7 @@ from matplotlib.patches import ConnectionPatch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 import os
+import matplotlib.patches as patches
 import random
 
 
@@ -62,7 +63,7 @@ def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, gr
     return train_filenames, val_filenames
 
 
-def sample_cities_images(dataset_path, sample_percentage=0.2, split_ratio=0.8):
+def sample_cities_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, ground_subdir=None, satellite_subdir=None):
     """
     Function to sample a percentage of the dataset and split it into training and validation sets.
     
@@ -77,13 +78,22 @@ def sample_cities_images(dataset_path, sample_percentage=0.2, split_ratio=0.8):
     """
 
     cities = [d for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))]
+
+    if ground_subdir is None or satellite_subdir is None:
+        if dataset_path == '/home/lrusso/CV-Cities':
+            ground_subdir = 'pano_images'
+            satellite_subdir = 'sat_images'
+        elif dataset_path == '/home/lrusso/CV-GLOBAL':
+            ground_subdir = 'streetview2048'
+            satellite_subdir = 'satellite'
+
     n_selected_cities = int(np.ceil(len(cities) * sample_percentage))
     selected_cities = random.sample(cities, n_selected_cities)
-
+        
     paired_filenames = []
     for city in selected_cities:
-        ground_dir = os.path.join(dataset_path, city, 'pano_images')
-        satellite_dir = os.path.join(dataset_path, city, 'sat_images')
+        ground_dir = os.path.join(dataset_path, city, ground_subdir)
+        satellite_dir = os.path.join(dataset_path, city, satellite_subdir)
 
         for root, _, files in os.walk(ground_dir):
             for file in files:
@@ -135,7 +145,6 @@ def extract_cutout_from_360(image, fov=(90, 180), yaw=180, pitch=90, debug=False
     
     if debug:
         # Draw the rectangle on the original image
-        import matplotlib.patches as patches
         fig, ax = plt.subplots(1, figsize=(10, 5))
         ax.imshow(image)
         rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=1, edgecolor='r', facecolor='none')

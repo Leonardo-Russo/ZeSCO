@@ -1,3 +1,6 @@
 models/**/*.pth
 model/model.onnx
 results/
+
+__pycache__/
+*.pyc
