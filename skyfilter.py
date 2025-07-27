@@ -3,20 +3,110 @@ import time
 import numpy as np
 import cv2
 import os
-import utils
 import urllib.request 
 import zipfile
 import onnx
 import onnxruntime as ort
-import global_vars as gv
-from guidedfilter import guided_filter
+
+import glob
+import unicodedata
+import re
+
+
+# This version should match the tag in the repository
+version = "v1.0.6"
+default_model_url = "https://github.com/OpenDroneMap/SkyRemoval/releases/download/%s/model.zip" % version 
+default_model_folder = "model"
+url_file = os.path.join(default_model_folder, 'url.txt')
+guided_filter_radius, guided_filter_eps = 20, 0.01
+
+
+# Based on Fast Guided Filter
+# Kaiming He, Jian Sun
+# https://arxiv.org/abs/1505.00996
+
+def box(img, radius):
+    dst = np.zeros_like(img)
+    (r, c) = img.shape
+
+    s = [radius, 1]
+    c_sum = np.cumsum(img, 0)
+    dst[0:radius+1, :, ...] = c_sum[radius:2*radius+1, :, ...]
+    dst[radius+1:r-radius, :, ...] = c_sum[2*radius+1:r, :, ...] - c_sum[0:r-2*radius-1, :, ...]
+    dst[r-radius:r, :, ...] = np.tile(c_sum[r-1:r, :, ...], s) - c_sum[r-2*radius-1:r-radius-1, :, ...]
+
+    s = [1, radius]
+    c_sum = np.cumsum(dst, 1)
+    dst[:, 0:radius+1, ...] = c_sum[:, radius:2*radius+1, ...]
+    dst[:, radius+1:c-radius, ...] = c_sum[:, 2*radius+1 : c, ...] - c_sum[:, 0 : c-2*radius-1, ...]
+    dst[:, c-radius: c, ...] = np.tile(c_sum[:, c-1:c, ...], s) - c_sum[:, c-2*radius-1 : c-radius-1, ...]
+
+    return dst
+
+
+#--- utils.py ---
+
+def slugify(value, allow_unicode=False):
+    """
+    Taken from https://github.com/django/django/blob/master/django/utils/text.py
+    Convert to ASCII if 'allow_unicode' is False. Convert spaces or repeated
+    dashes to single dashes. Remove characters that aren't alphanumerics,
+    underscores, or hyphens. Convert to lowercase. Also strip leading and
+    trailing whitespace, dashes, and underscores.
+    """
+    value = str(value)
+    if allow_unicode:
+        value = unicodedata.normalize('NFKC', value)
+    else:
+        value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
+    value = re.sub(r'[^\w\s-]', '', value.lower())
+    return re.sub(r'[-\s]+', '-', value).strip('-_')
+   
+
+def get_cached_url():            
+    if not os.path.exists(url_file):
+        return None
+
+    with open(url_file, 'r') as f:
+        return f.read()
+        
+
+def save_cached_url(url):
+    with open(url_file, 'w') as f:
+        f.write(url)
+
+
+def find_model_file():
+
+    # Get first file with .onnx extension, pretty naive way
+    candidates = glob.glob(os.path.join(default_model_folder, '*.onnx'))
+    if len(candidates) == 0:
+        raise Exception('No model found (expected at least one file with .onnx extension')
+    
+    return candidates[0]
+
+
+
+def guided_filter(img, guide, radius, eps):
+    (r, c) = img.shape
+
+    CNT = box(np.ones([r, c]), radius)
+
+    mean_img = box(img, radius) / CNT
+    mean_guide = box(guide, radius) / CNT
+
+    a = ((box(img * guide, radius) / CNT) - mean_img * mean_guide) / (((box(img * img, radius) / CNT) - mean_img * mean_img) + eps)
+    b = mean_guide - a * mean_img
+
+    return (box(a, radius) / CNT) * img + (box(b, radius) / CNT)
+
 
 # Use GPU if it is available, otherwise CPU
 provider = "CUDAExecutionProvider" if "CUDAExecutionProvider" in ort.get_available_providers() else "CPUExecutionProvider"
 
 class SkyFilter():
 
-    def __init__(self, model = gv.default_model_url, ignore_cache = False, width = 384, height = 384):
+    def __init__(self, model = default_model_url, ignore_cache = False, width = 384, height = 384):
 
         self.model = model
         self.ignore_cache = ignore_cache
@@ -31,8 +121,8 @@ class SkyFilter():
         # Check if model is path or url
         if not os.path.exists(self.model):
           
-            if not os.path.exists(gv.default_model_folder):
-                os.mkdir(gv.default_model_folder)
+            if not os.path.exists(default_model_folder):
+                os.mkdir(default_model_folder)
 
             if self.ignore_cache:
 
@@ -41,22 +131,22 @@ class SkyFilter():
 
             else:
 
-                cached_url = utils.get_cached_url()
+                cached_url = get_cached_url()
 
                 if cached_url is None:
 
                     url = self.model
                     self.model = self.get_model(self.model)
-                    utils.save_cached_url(url)
+                    save_cached_url(url)
 
                 else:
                     
                     if cached_url != self.model:
                         url = self.model
                         self.model = self.get_model(self.model)
-                        utils.save_cached_url(url)
+                        save_cached_url(url)
                     else:
-                        self.model = utils.find_model_file()
+                        self.model = find_model_file()
 
         print(' -> Loading the model')
         onnx_model = onnx.load(self.model)
@@ -77,7 +167,7 @@ class SkyFilter():
 
         print(' -> Downloading model from: %s' % url)
 
-        dest_file = os.path.join(gv.default_model_folder, utils.slugify(os.path.basename(url)))
+        dest_file = os.path.join(default_model_folder, slugify(os.path.basename(url)))
 
         urllib.request.urlretrieve(url, dest_file)
 
@@ -85,10 +175,10 @@ class SkyFilter():
         if os.path.splitext(url)[1].lower() == '.zip':
             print(' -> Extracting model')
             with zipfile.ZipFile(dest_file, 'r') as zip_ref:
-                zip_ref.extractall(gv.default_model_folder)
+                zip_ref.extractall(default_model_folder)
             os.remove(dest_file)
 
-            return utils.find_model_file()
+            return find_model_file()
 
         else:
             return dest_file
@@ -121,7 +211,7 @@ class SkyFilter():
 
     def refine(self, pred, img):
 
-        refined = guided_filter(img[:,:,2], pred[:,:,0], gv.guided_filter_radius, gv.guided_filter_eps)
+        refined = guided_filter(img[:,:,2], pred[:,:,0], guided_filter_radius, guided_filter_eps)
 
         res = np.clip(refined, a_min=0, a_max=1)
         

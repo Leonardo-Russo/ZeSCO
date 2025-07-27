@@ -537,7 +537,7 @@ def test(model, model_name, data_loader, device, savepath='untitled', create_fig
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test CRODINO')
     parser.add_argument('--model', '-m', type=str, default='DINOv2', help='Model to use')
-    parser.add_argument('--dataset', '-d', type=str, default='VIGOR', help='Dataset to use')
+    parser.add_argument('--dataset', '-d', type=str, default='cvusa', help='Dataset to use')
     parser.add_argument('--save_path', '-p', type=str, default='untitled', help='Path to save the model and results')
     parser.add_argument('--debug', '-db', type=str, default='False', help='Debug mode')
     parser.add_argument('--create_figs', '-s', type=str, default='False', help='Create figures')
@@ -545,8 +545,9 @@ if __name__ == '__main__':
     
     # Get Dataset Images
     dataset_name = args.dataset
-    if dataset_name == "CVUSA":
-        dataset_path = '/home/lrusso/cvusa/CVPR_subset'
+    if dataset_name == "cvusa":
+        # dataset_path = '/home/lrusso/cvusa/CVPR_subset'
+        dataset_path = r'D:\CVUSA\CVPR_subset'
         train_filenames, val_filenames = sample_cvusa_images(dataset_path, sample_percentage=0.005, split_ratio=0.8, groundtype='panos')
     elif dataset_name == "CITIES":
         dataset_path = '/home/lrusso/CV-Cities'
