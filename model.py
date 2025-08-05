@@ -229,7 +229,10 @@ class CrossviewModel(nn.Module):
         if mode == "save":
             if results_path is None:
                 save_path = "tokens.png"
+            else:
+                save_path = results_path
             fig.savefig(save_path, dpi=dpi)
+            plt.show()
             plt.close(fig)
         elif mode == "show":
             plt.show()
