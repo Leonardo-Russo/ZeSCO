@@ -15,7 +15,7 @@ import re
 
 from dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images
 # from dataloader_vigor import DataLoader_VIGOR
-from model import CrossviewModel
+from model import CrossviewModel, CosineSimilarityLoss, CosineSimilarityLossCustom
 from skyfilter import SkyFilter
 
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
@@ -221,7 +221,7 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=16):
         direction_tokens = tokens[vertical_idx::grid_size]  # extract each vertical line
         return direction_tokens, [(i, vertical_idx) for i in range(grid_size)]
         
-def find_alignment(fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, image_span, debug=False):
+def find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, image_span, debug=False):
     """
     Finds the alignment between averaged vertical tokens and averaged radial tokens.
     Parameters:
@@ -252,7 +252,7 @@ def find_alignment(fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tok
             vert_avg_tokens = np.vstack((fore_vert_avg_tokens[(grid_size-1)-i], midd_vert_avg_tokens[(grid_size-1)-i], back_vert_avg_tokens[(grid_size-1)-i]))            
             rad_avg_tokens = np.vstack((fore_rad_avg_token, midd_rad_avg_token, back_rad_avg_token))
 
-            cone_distance += np.linalg.norm((1 - np.dot(vert_avg_tokens, np.transpose(rad_avg_tokens))))       # cosine distance
+            cone_distance += loss(vert_avg_tokens, rad_avg_tokens)
 
         cone_distance /= grid_size
         if cone_distance < min_distance:
@@ -440,12 +440,20 @@ def _save_separate_figures(results_dir, sample_id,
     plt.close(fig_r)
 
 
-def test(model, backbone, data_loader, device, savepath='untitled', create_figs=False, debug=False, save_mode='combined'):
+def test(model, backbone, loss, data_loader, device, savepath='untitled', create_figs=False, debug=False, save_mode='combined'):
 
     # Create results directory if it doesn't exist
     results_dir = os.path.join('results', savepath)
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
+
+    # Define Loss Functionù
+    if loss == 'cosine_similarity':
+        loss = CosineSimilarityLoss()
+    elif loss == 'cosine_similarity_custom':
+        loss = CosineSimilarityLossCustom()
+    else:
+        raise ValueError('The loss provided is not implemented.')
 
     # Initialize the sky filter
     sky_filter = SkyFilter() 
@@ -532,7 +540,7 @@ def test(model, backbone, data_loader, device, savepath='untitled', create_figs=
                     print("averaged radial tokens: ", fore_rad_avg_tokens.shape)   
 
                 # Find the best alignment
-                best_orientation, distances, min_distance, confidence = find_alignment(fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, fov_x, debug=False)
+                best_orientation, distances, min_distance, confidence = find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, fov_x, debug=False)
 
                 delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
                 delta_yaws.append(delta_yaw)
@@ -638,7 +646,8 @@ def test(model, backbone, data_loader, device, savepath='untitled', create_figs=
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test CRODINO')
     parser.add_argument('--backbone', '-b', type=str, default='dinov2', help='Model to use')
-    parser.add_argument('--dataset', '-d', type=str, default='cvusa', help='Dataset to use')
+    parser.add_argument('--loss', '-l', type=str, default='cosine_similarity_custom', help='Loss to use for the Orientation Estimation')
+    parser.add_argument('--dataset', '-d', type=str, default='cvusa_subset', help='Dataset to use')
     parser.add_argument('--save_path', '-p', type=str, default='untitled', help='Path to save the model and results')
     parser.add_argument('--debug', '-db', type=str, default='False', help='Debug mode')
     parser.add_argument('--create_figs', '-s', type=str, default='False', help='Create figures')
@@ -649,6 +658,10 @@ if __name__ == '__main__':
     # Get Dataset Images
     dataset_name = args.dataset
     if dataset_name == "cvusa":
+        # dataset_path = '/home/lrusso/cvusa/CVPR_subset'
+        dataset_path = r'D:\CVUSA\CVPR_subset'
+        train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=1.0, split_ratio=0.8, groundtype='panos')
+    if dataset_name == "cvusa_subset":
         # dataset_path = '/home/lrusso/cvusa/CVPR_subset'
         dataset_path = r'D:\CVUSA\CVPR_subset'
         train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=0.005, split_ratio=0.8, groundtype='panos')
@@ -721,6 +734,7 @@ if __name__ == '__main__':
 
     test(model,
          args.backbone,
+         args.loss,
          data_loader,
          device,
          savepath=args.save_path,

@@ -532,7 +532,7 @@ class CosineSimilarityLoss(nn.Module):
     def forward(self, x1, x2):
         # x1_flat = x1.view(x1.size(0), -1)           # flatten the last two dimensions
         # x2_flat = x2.view(x2.size(0), -1)
-        cos_sim = F.cosine_similarity(x1, x2, dim=-1)         # compute cosine similarity        
+        cos_sim = F.cosine_similarity(torch.tensor(x1), torch.tensor(x2), dim=-1)         # compute cosine similarity        
         loss = 1 - cos_sim.mean()                                       # convert similarity to loss
         # print("cos_sim shape: ", cos_sim.shape)
         # print("loss: ", loss)
@@ -547,3 +547,17 @@ class CosineSimilarityLoss(nn.Module):
         ## Implementation:
         # compute cross-entropy loss for the matrixs
         return loss
+    
+
+class CosineSimilarityLossCustom(nn.Module):
+
+    def __init__(self):
+            super(CosineSimilarityLossCustom, self).__init__()
+
+    def forward(self, vert_tokens, rad_tokens):
+
+        products = []
+        for (vert_token, rad_token) in zip(vert_tokens, rad_tokens):
+            products.append(np.dot(vert_token, rad_token))
+
+        return 1 - np.mean(products)
