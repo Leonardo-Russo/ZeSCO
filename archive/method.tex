@@ -1,0 +1,153 @@
+\section{Crossview Method}
+\label{sec:method}
+
+We propose CroDINO, a novel approach for cross-view orientation estimation that leverages backbone-agnostic feature extraction with orientation-aware token aggregation strategies. Our method addresses the fundamental challenge of aligning ground-level panoramic images with aerial satellite views by exploiting both spatial structure and depth information through a flexible architecture that supports multiple vision foundation models.
+
+\subsection{Problem Formulation}
+
+Given a ground-level panoramic image $I_g$ and an aerial satellite image $I_a$ of the same geographic location, our goal is to estimate the relative orientation $\theta$ between the two views. The ground image is extracted from a 360° panorama using a field-of-view (FOV) window defined by parameters $(f_x, f_y, \psi, \phi)$, where $f_x$ and $f_y$ represent the horizontal and vertical FOV angles, $\psi$ is the yaw (rotation around the vertical axis), and $\phi$ is the pitch (elevation angle).
+
+\subsection{Architecture Overview}
+
+\subsubsection{Backbone-Agnostic Feature Extraction}
+
+CroDINO employs a flexible architecture that can utilize different pre-trained vision models as feature extractors. Our implementation supports multiple backbone architectures including Vision Transformers (DINOv2, CLIP) and Convolutional Neural Networks (ResNet50), allowing for comparative analysis and optimal performance selection.
+
+The backbone-agnostic design consists of:
+\begin{itemize}
+    \item \textbf{Flexible Feature Extractor}: Support for DINOv2-ViT-B/14, CLIP-ViT-Base-Patch16, or ResNet50 as frozen feature extractors.
+    \item \textbf{Unified Token Interface}: Standardized token representation regardless of backbone architecture.
+    \item \textbf{Dynamic Grid Adaptation}: Automatic grid size calculation based on token dimensions from different architectures.
+\end{itemize}
+
+\subsubsection{Multi-Backbone Token Processing}
+
+The feature extraction process varies by backbone but produces consistent token representations:
+
+\textbf{Vision Transformer Backbones}: For DINOv2 and CLIP models, patch embeddings are extracted and normalized:
+\begin{align}
+\mathbf{F}_g^{raw} &= \text{Backbone}(I_g) \\
+\mathbf{F}_a^{raw} &= \text{Backbone}(I_a) \\
+\mathbf{F}_g &= \text{L2Normalize}(\mathbf{F}_g^{raw}[:, 1:, :]) \\
+\mathbf{F}_a &= \text{L2Normalize}(\mathbf{F}_a^{raw}[:, 1:, :])
+\end{align}
+
+\textbf{CNN Backbones}: For ResNet50, convolutional features are flattened into token-like representations:
+\begin{align}
+\mathbf{F}_g^{conv} &= \text{ResNet50}(I_g) \\
+\mathbf{F}_a^{conv} &= \text{ResNet50}(I_a) \\
+\mathbf{F}_g &= \text{Reshape}(\mathbf{F}_g^{conv}, (-1, D)) \\
+\mathbf{F}_a &= \text{Reshape}(\mathbf{F}_a^{conv}, (-1, D))
+\end{align}
+
+where $D$ represents the feature dimension (768 for ViTs, 2048 for ResNet50). The grid size $G$ is dynamically calculated as $G = \sqrt{N}$ where $N$ is the number of tokens.
+
+\subsection{Orientation-Aware Token Aggregation}
+
+\subsubsection{Sky Filtering and Depth Estimation}
+
+To improve orientation estimation, we incorporate semantic and geometric priors:
+
+\textbf{Sky Segmentation}: We employ a lightweight CNN-based sky filter to identify and mask sky regions in ground images. The sky mask $M_{sky}$ is computed at the patch level using majority voting within each grid cell, producing a binary mask $M_{grid} \in \{0,1\}^{G \times G}$ where 1 indicates ground and 0 indicates sky.
+
+\textbf{Depth Estimation}: We utilize the Depth-Anything model to generate depth maps $D$ for ground images. The depth information is downsampled to match the token grid, providing normalized depth values $d_{i,j} \in [0,1]$ for each spatial location $(i,j)$.
+
+\subsubsection{Multi-Layer Depth-Weighted Token Aggregation}
+
+We introduce a novel aggregation strategy that separates tokens into three depth layers: foreground, middleground, and background. This approach captures the multi-scale nature of visual features in cross-view matching.
+
+\textbf{Vertical Column Analysis}: For each vertical column $j$ in the ground image feature grid, we compute depth-weighted averages over valid (non-sky) tokens:
+
+\begin{align}
+\mathbf{t}_j^{fore} &= \frac{\sum_{i: M_{grid}(i,j)=1} w_i^{fore} \cdot \mathbf{f}_{i,j}^g}{\sum_{i: M_{grid}(i,j)=1} w_i^{fore}} \\
+\mathbf{t}_j^{mid} &= \frac{\sum_{i: M_{grid}(i,j)=1} w_i^{mid} \cdot \mathbf{f}_{i,j}^g}{\sum_{i: M_{grid}(i,j)=1} w_i^{mid}} \\
+\mathbf{t}_j^{back} &= \frac{\sum_{i: M_{grid}(i,j)=1} w_i^{back} \cdot \mathbf{f}_{i,j}^g}{\sum_{i: M_{grid}(i,j)=1} w_i^{back}}
+\end{align}
+
+where the depth-dependent weights are defined as:
+\begin{align}
+w_i^{fore} &= d_{i,j} \\
+w_i^{mid} &= \begin{cases} 
+\frac{d_{i,j}}{\tau} & \text{if } d_{i,j} \leq 0.5 \\
+\frac{1-d_{i,j}}{d_{i,j}} & \text{otherwise}
+\end{cases} \\
+w_i^{back} &= 1 - d_{i,j}
+\end{align}
+
+with threshold $\tau = 0.5$. This weighting scheme emphasizes close objects for foreground, balanced weights for middleground, and distant objects for background layers.
+
+\textbf{Radial Direction Analysis}: For aerial images, we extract features along radial directions from the center, using linear weight progressions:
+
+\begin{align}
+\mathbf{r}_\beta^{fore} &= \frac{\sum_{r=0}^{R} w_r^{fore} \cdot \mathbf{f}_{\beta,r}^a}{\sum_{r=0}^{R} w_r^{fore}} \\
+\mathbf{r}_\beta^{mid} &= \frac{\sum_{r=0}^{R} w_r^{mid} \cdot \mathbf{f}_{\beta,r}^a}{\sum_{r=0}^{R} w_r^{mid}} \\
+\mathbf{r}_\beta^{back} &= \frac{\sum_{r=0}^{R} w_r^{back} \cdot \mathbf{f}_{\beta,r}^a}{\sum_{r=0}^{R} w_r^{back}}
+\end{align}
+
+where $\beta$ represents the angular direction, $r$ is the radial distance from center, and the weights follow: $w_r^{fore} = 1-r/R$ (decreasing), $w_r^{back} = r/R$ (increasing), and $w_r^{mid}$ follows a triangular pattern peaking at the center.
+
+\subsection{Orientation Estimation}
+
+\subsubsection{Cross-Modal Alignment via Cosine Distance Minimization}
+
+We estimate orientation by finding the angular offset that minimizes the cosine distance between corresponding vertical and radial feature aggregations. For each candidate orientation $\theta$, we compute the alignment cost:
+
+\begin{align}
+\mathcal{L}(\theta) = \frac{1}{G} \sum_{i=0}^{G} \left\| 1 - \begin{bmatrix} \mathbf{t}_{G-1-i}^{fore} \\ \mathbf{t}_{G-1-i}^{mid} \\ \mathbf{t}_{G-1-i}^{back} \end{bmatrix}^T \begin{bmatrix} \mathbf{r}_{\phi(\theta,i)}^{fore} \\ \mathbf{r}_{\phi(\theta,i)}^{mid} \\ \mathbf{r}_{\phi(\theta,i)}^{back} \end{bmatrix} \right\|
+\end{align}
+
+where $\phi(\theta,i) = (\lfloor\theta/\Delta\theta\rfloor + i - G/2) \bmod |\mathcal{R}|$ maps vertical columns to radial directions, $\Delta\theta = \text{FOV}_x / G$ is the angular step size, and $G$ is the dynamically calculated grid size.
+
+The optimal orientation is found through exhaustive search:
+\begin{align}
+\theta^* = \arg\min_{\theta \in [0, 360)} \mathcal{L}(\theta)
+\end{align}
+
+\subsubsection{Confidence Estimation}
+
+To assess the reliability of orientation estimates, we compute a confidence score based on the Z-score of the minimum distance:
+
+\begin{align}
+\text{confidence} = \frac{\mu(\mathcal{L}) - \min(\mathcal{L})}{\sigma(\mathcal{L})}
+\end{align}
+
+where $\mu(\mathcal{L})$ and $\sigma(\mathcal{L})$ are the mean and standard deviation of the loss values across all candidate orientations. Higher confidence scores indicate more reliable orientation estimates.
+
+\subsection{Implementation Details}
+
+\subsubsection{Backbone-Specific Configurations}
+
+Our implementation supports three backbone architectures:
+
+\textbf{DINOv2}: Uses the pre-trained DINOv2-ViT-B/14 model with 14×14 pixel patches, producing a $16 \times 16$ token grid with 768-dimensional features. Positional embeddings are interpolated for different input sizes.
+
+\textbf{CLIP}: Employs CLIP-ViT-Base-Patch16 with 16×16 pixel patches, generating a $14 \times 14$ token grid with 768-dimensional features. L2 normalization is applied to token representations for improved stability.
+
+\textbf{ResNet50}: Uses convolutional features from the penultimate layer, which are reshaped into 2048-dimensional tokens. The spatial resolution depends on the input size and stride configuration.
+
+\subsubsection{Training Strategy and Preprocessing}
+
+Our approach operates in a largely unsupervised manner, leveraging pre-trained features without requiring orientation labels during training. The orientation estimation is performed through geometric alignment of feature aggregations.
+
+\textbf{Data Preprocessing}: We extract random FOV windows from panoramic images with:
+\begin{itemize}
+    \item Horizontal FOV: $90^\circ$ (configurable)
+    \item Vertical FOV: $180^\circ$ 
+    \item Random yaw: $\psi \sim \text{Uniform}(0^\circ, 360^\circ)$
+    \item Fixed pitch: $\phi = 90^\circ$
+\end{itemize}
+
+Aerial images undergo center cropping and resizing to match the ground image dimensions.
+
+\subsubsection{Pipeline Architecture}
+
+The complete pipeline processes image pairs through the following stages:
+\begin{enumerate}
+    \item \textbf{Feature Extraction}: Backbone-specific token generation with dynamic grid size calculation
+    \item \textbf{Sky Segmentation}: CNN-based sky filtering with guided filter refinement
+    \item \textbf{Depth Estimation}: Depth-Anything model for geometric understanding
+    \item \textbf{Token Aggregation}: Multi-layer depth-weighted aggregation for both vertical and radial directions
+    \item \textbf{Orientation Search}: Exhaustive search over discretized orientation space with cosine similarity
+\end{enumerate}
+
+All models are implemented in PyTorch and support both CPU and GPU execution. The orientation search space is discretized with angular steps of $\Delta\theta = \text{FOV}_x / G$, where the grid size $G$ is dynamically determined from the backbone's token dimensions. This flexible approach ensures optimal resolution regardless of the chosen backbone architecture.

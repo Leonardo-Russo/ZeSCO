@@ -15,6 +15,7 @@ from torch.utils.data import Dataset, DataLoader
 import os
 import matplotlib.patches as patches
 import random
+from transformers import ViTImageProcessor, AutoModel
 
 
 def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, groundtype='panos'):
@@ -244,3 +245,12 @@ class PairedImagesDataset(Dataset):
                 aerial_image = self.transform_aerial(aerial_image)
 
         return ground_image, aerial_image, fov, yaw, pitch
+    
+
+# class collate_fn_dino3():
+
+#     def __init__(self):
+#         self.processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+
+#     def __call__(self, batch):
+#         return self.processor(images=batch, return_tensors="pt")

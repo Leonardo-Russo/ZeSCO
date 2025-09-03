@@ -23,6 +23,8 @@ from transformers import CLIPProcessor, CLIPModel
 from sklearn.preprocessing import normalize
 from torchinfo import summary
 
+from transformers import ViTImageProcessor, AutoModel
+
 import warnings
 warnings.simplefilter("ignore", category=UserWarning)
         
@@ -34,6 +36,12 @@ class CrossviewModel(nn.Module):
         self.backbone = backbone
         self.pretrained = frozen
         self.device = device if device else "cuda" if torch.cuda.is_available() else "cpu"
+
+        self.transform = transforms.Compose([
+            transforms.Resize(size=(224, 224), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # imagenet defaults
+        ])
 
         if backbone == 'dinov2':
 
@@ -76,6 +84,62 @@ class CrossviewModel(nn.Module):
             if frozen:
                 for param in self.feature_extractor.parameters():
                     param.requires_grad = False
+
+        elif backbone == "dinov3":
+
+            self.processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+            self.model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+
+            self.patch_size = self.model.config.patch_size
+
+        elif backbone == "dinov3_crossview":
+
+            self.ground_processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+            self.ground_model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+
+            self.aerial_processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
+            self.aerial_model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
+
+            self.patch_size = self.ground_model.config.patch_size
+
+        elif backbone == 'dinov3_sat':
+
+            self.processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
+            self.model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
+
+            self.patch_size = self.model.config.patch_size
+
+    def _forward_dinov3_crossview(self, ground_input, aerial_input, debug=False):
+
+        ground_outputs = self.ground_model(**ground_input)
+        aerial_outputs = self.aerial_model(**aerial_input)
+
+        ground_batch_size, _, ground_img_height, ground_img_width = ground_input.pixel_values.shape
+        aerial_batch_size, _, aerial_img_height, aerial_img_width = aerial_input.pixel_values.shape
+
+        ground_num_patches_height, ground_num_patches_width = ground_img_height // self.patch_size, ground_img_width // self.patch_size
+        aerial_num_patches_height, aerial_num_patches_width = aerial_img_height // self.patch_size, aerial_img_width // self.patch_size
+
+        ground_num_patches_flat = ground_num_patches_height * ground_num_patches_width
+        aerial_num_patches_flat = aerial_num_patches_height * aerial_num_patches_width
+
+        ground_last_hidden_states = ground_outputs.last_hidden_state
+        # print(ground_last_hidden_states.shape)  # [1, 1 + 4 + 256, 384]
+        assert ground_last_hidden_states.shape == (ground_batch_size, 1 + self.ground_model.config.num_register_tokens + ground_num_patches_flat, self.ground_model.config.hidden_size)
+
+        aerial_last_hidden_states = aerial_outputs.last_hidden_state
+        # print(aerial_last_hidden_states.shape)  # [1, 1 + 4 + 256, 384]
+        assert aerial_last_hidden_states.shape == (aerial_batch_size, 1 + self.aerial_model.config.num_register_tokens + aerial_num_patches_flat, self.aerial_model.config.hidden_size)
+
+        ground_cls_token = ground_last_hidden_states[:, 0, :]
+        ground_patch_features_flat = ground_last_hidden_states[:, 1 + self.ground_model.config.num_register_tokens:, :]
+        ground_patch_features = ground_patch_features_flat.unflatten(1, (ground_num_patches_height, ground_num_patches_width))
+
+        aerial_cls_token = aerial_last_hidden_states[:, 0, :]
+        aerial_patch_features_flat = aerial_last_hidden_states[:, 1 + self.aerial_model.config.num_register_tokens:, :]
+        aerial_patch_features = aerial_patch_features_flat.unflatten(1, (aerial_num_patches_height, aerial_num_patches_width))
+
+        return ground_patch_features_flat, aerial_patch_features_flat
 
     def _forward_clip(self, ground_image, aerial_image, debug):
 
@@ -129,7 +193,39 @@ class CrossviewModel(nn.Module):
             print("x2_cls shape: ", aerial_cls.shape)
 
         return ground_tokens, aerial_tokens
-    
+
+    def _forward_dinov3(self, ground_input, aerial_input, debug=False):
+
+        ground_outputs = self.model(**ground_input)
+        aerial_outputs = self.model(**aerial_input)
+
+        ground_batch_size, _, ground_img_height, ground_img_width = ground_input.pixel_values.shape
+        aerial_batch_size, _, aerial_img_height, aerial_img_width = aerial_input.pixel_values.shape
+
+        ground_num_patches_height, ground_num_patches_width = ground_img_height // self.patch_size, ground_img_width // self.patch_size
+        aerial_num_patches_height, aerial_num_patches_width = aerial_img_height // self.patch_size, aerial_img_width // self.patch_size
+
+        ground_num_patches_flat = ground_num_patches_height * ground_num_patches_width
+        aerial_num_patches_flat = aerial_num_patches_height * aerial_num_patches_width
+
+        ground_last_hidden_states = ground_outputs.last_hidden_state
+        # print(ground_last_hidden_states.shape)  # [1, 1 + 4 + 256, 384]
+        assert ground_last_hidden_states.shape == (ground_batch_size, 1 + self.model.config.num_register_tokens + ground_num_patches_flat, self.model.config.hidden_size)
+
+        aerial_last_hidden_states = aerial_outputs.last_hidden_state
+        # print(aerial_last_hidden_states.shape)  # [1, 1 + 4 + 256, 384]
+        assert aerial_last_hidden_states.shape == (aerial_batch_size, 1 + self.model.config.num_register_tokens + aerial_num_patches_flat, self.model.config.hidden_size)
+
+        ground_cls_token = ground_last_hidden_states[:, 0, :]
+        ground_patch_features_flat = ground_last_hidden_states[:, 1 + self.model.config.num_register_tokens:, :]
+        ground_patch_features = ground_patch_features_flat.unflatten(1, (ground_num_patches_height, ground_num_patches_width))
+
+        aerial_cls_token = aerial_last_hidden_states[:, 0, :]
+        aerial_patch_features_flat = aerial_last_hidden_states[:, 1 + self.model.config.num_register_tokens:, :]
+        aerial_patch_features = aerial_patch_features_flat.unflatten(1, (aerial_num_patches_height, aerial_num_patches_width))
+
+        return ground_patch_features_flat, aerial_patch_features_flat
+
     def _forward_resnet50(self, ground_image, aerial_image, debug):
 
         ground_features = self.feature_extractor(ground_image)
@@ -140,17 +236,23 @@ class CrossviewModel(nn.Module):
 
         return ground_tokens, aerial_tokens
 
-    def forward(self, ground_image, aerial_image, debug=False):
+    def forward(self, ground_input, aerial_input, debug=False):
         
         if self.backbone == 'clip':
-            return self._forward_clip(ground_image, aerial_image, debug)
+            return self._forward_clip(ground_input, aerial_input, debug)
         elif self.backbone == 'dinov2':
-            return self._forward_dinov2(ground_image, aerial_image, debug)
+            return self._forward_dinov2(ground_input, aerial_input, debug)
         elif self.backbone == 'resnet50':
-            return self._forward_resnet50(ground_image, aerial_image, debug)
+            return self._forward_resnet50(ground_input, aerial_input, debug)
+        elif self.backbone == 'dinov3':
+            return self._forward_dinov3(ground_input, aerial_input, debug)
+        elif self.backbone == 'dinov3_crossview':
+            return self._forward_dinov3_crossview(ground_input, aerial_input, debug)
+        elif self.backbone == 'dinov3_sat':
+            return self._forward_dinov3(ground_input, aerial_input, debug)
         else:
             raise ValueError("Unsupported backbone: {}".format(self.backbone))
-        
+
     def prepare_tokens(self, x, debug=False):
         B, nc, w, h = x.shape
         x = self.patch_embed(x)
@@ -196,10 +298,13 @@ class CrossviewModel(nn.Module):
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
         return normalized_tokens
     
-    def show_tokens(self, imgs_tokens, grid_shape=None, mode="show", results_path=None, dpi=300):
+    def show_tokens(self, imgs_tokens, grid_shape=None, mode="show", results_path=None, dpi=300, return_tokens=False):
 
         B, n, C = imgs_tokens.shape
         n_patches = int(math.sqrt(n))
+
+        if return_tokens:
+            out = []
 
         if grid_shape is None:
             side = int(np.ceil(np.sqrt(B)))
@@ -218,6 +323,7 @@ class CrossviewModel(nn.Module):
             ax.axis('off')
 
             vis_tokens = self.get_embedding_visualization(img_tokens, (n_patches, n_patches))
+            out.append(vis_tokens) if return_tokens else None
             ax.imshow(vis_tokens)
 
         # Hide any remaining axes
@@ -236,6 +342,67 @@ class CrossviewModel(nn.Module):
             plt.close(fig)
         elif mode == "show":
             plt.show()
+
+        if return_tokens:
+            vis_tokens = np.stack(out, axis=0)
+            return vis_tokens
+        
+    def prepare_image(self, rgb_image_numpy, patch_size=None):
+        image = Image.fromarray(rgb_image_numpy)
+        image_tensor = self.transform(image)
+        resize_scale = image.width / image_tensor.shape[2]
+        # resize_scale = 1.0
+
+        height, width = image_tensor.shape[1:] # C x H x W
+        cropped_width, cropped_height = width - width % self.patch_size, height - height % self.patch_size # crop a bit from right and bottom parts
+        image_tensor = image_tensor[:, :cropped_height, :cropped_width]
+
+        if patch_size is None:
+            grid_size = (cropped_height // self.patch_size, cropped_width // self.patch_size)
+        else:
+            grid_size = (cropped_height // patch_size, cropped_width // patch_size)
+        return image_tensor, grid_size, resize_scale
+
+    def extract_features(self, image_tensor):
+        with torch.inference_mode():
+            if self.half_precision:
+                image_batch = image_tensor.unsqueeze(0).half()
+            else:
+                image_batch = image_tensor.unsqueeze(0)
+
+            tokens = self.model.get_intermediate_layers(image_batch)[0].squeeze()
+        return tokens.cpu().numpy()
+
+    def idx_to_source_position(self, idx, grid_size, resize_scale):
+        row = (idx // grid_size[1])*self.model.patch_size*resize_scale + self.model.patch_size / 2
+        col = (idx % grid_size[1])*self.model.patch_size*resize_scale + self.model.patch_size / 2
+        return row, col
+
+    def get_embedding_visualization(self, tokens, grid_size):
+        pca = PCA(n_components=3)
+        reduced_tokens = pca.fit_transform(tokens.astype(np.float32))
+        reduced_tokens = reduced_tokens.reshape((*grid_size, -1))
+        normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
+        return normalized_tokens
+
+    def get_combined_embedding_visualization(self, tokens1, tokens2, grid_size1, grid_size2, random_state=20):
+        pca = PCA(n_components=3, random_state=random_state)
+
+        token1_shape = tokens1.shape[0]
+        combined_tokens = np.concatenate((tokens1, tokens2), axis=0)
+        reduced_tokens = pca.fit_transform(combined_tokens.astype(np.float32))
+
+        print("tokens1.shape", tokens1.shape)
+        print("tokens2.shape", tokens2.shape)
+        print("reduced_tokens.shape", reduced_tokens.shape)
+        normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
+
+        rgbimg1 = normalized_tokens[0:token1_shape, :]
+        rgbimg2 = normalized_tokens[token1_shape:, :]
+
+        rgbimg1 = rgbimg1.reshape((*grid_size1, -1))
+        rgbimg2 = rgbimg2.reshape((*grid_size2, -1))
+        return rgbimg1, rgbimg2
 
 
 # reg
