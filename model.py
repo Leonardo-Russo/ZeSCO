@@ -37,12 +37,6 @@ class CrossviewModel(nn.Module):
         self.pretrained = frozen
         self.device = device if device else "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.transform = transforms.Compose([
-            transforms.Resize(size=(224, 224), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # imagenet defaults
-        ])
-
         if backbone == 'dinov2':
 
             self.original_model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14")
@@ -73,7 +67,6 @@ class CrossviewModel(nn.Module):
 
             self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16").to(self.device)
             self.patch_size = 16
-            self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
 
         elif backbone == "resnet50":
 
@@ -88,26 +81,22 @@ class CrossviewModel(nn.Module):
         elif backbone == "dinov2T":
             
             self.model = AutoModel.from_pretrained('facebook/dinov2-base')
-
             self.patch_size = self.model.config.patch_size
 
         elif backbone == "dinov3":
 
             self.model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
-
             self.patch_size = self.model.config.patch_size
 
         elif backbone == "dinov3_crossview":
 
             self.ground_model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
             self.aerial_model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
-
             self.patch_size = self.ground_model.config.patch_size
 
         elif backbone == 'dinov3_sat':
 
             self.model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
-
             self.patch_size = self.model.config.patch_size
 
     def _forward_dinov3_crossview(self, ground_input, aerial_input, debug=False):
@@ -115,8 +104,8 @@ class CrossviewModel(nn.Module):
         ground_outputs = self.ground_model(ground_input)
         aerial_outputs = self.aerial_model(aerial_input)
 
-        ground_batch_size, _, ground_img_height, ground_img_width = ground_input.pixel_values.shape
-        aerial_batch_size, _, aerial_img_height, aerial_img_width = aerial_input.pixel_values.shape
+        ground_batch_size, _, ground_img_height, ground_img_width = ground_input.shape
+        aerial_batch_size, _, aerial_img_height, aerial_img_width = aerial_input.shape
 
         ground_num_patches_height, ground_num_patches_width = ground_img_height // self.patch_size, ground_img_width // self.patch_size
         aerial_num_patches_height, aerial_num_patches_width = aerial_img_height // self.patch_size, aerial_img_width // self.patch_size
@@ -200,11 +189,11 @@ class CrossviewModel(nn.Module):
         ground_outputs = self.model(ground_input)
         aerial_outputs = self.model(aerial_input)
 
-        ground_batch_size, _, ground_img_height, ground_img_width = ground_input.pixel_values.shape
+        ground_batch_size, _, ground_img_height, ground_img_width = ground_input.shape
         ground_num_patches_height, ground_num_patches_width = ground_img_height // self.patch_size, ground_img_width // self.patch_size
         ground_num_patches_flat = ground_num_patches_height * ground_num_patches_width
 
-        aerial_batch_size, _, aerial_img_height, aerial_img_width = aerial_input.pixel_values.shape
+        aerial_batch_size, _, aerial_img_height, aerial_img_width = aerial_input.shape
         aerial_num_patches_height, aerial_num_patches_width = aerial_img_height // self.patch_size, aerial_img_width // self.patch_size
         aerial_num_patches_flat = aerial_num_patches_height * aerial_num_patches_width
 
