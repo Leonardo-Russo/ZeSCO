@@ -195,6 +195,9 @@ def polar_transform(image, target_size):
             # Copy the pixel value from the original to the transformed image
             transformed_image_np[i, j] = image_np[ya, xa]
 
+    # Make sure all values are within valid range before conversion to PIL Image
+    transformed_image_np = np.clip(transformed_image_np, 0, 255).astype(np.uint8)
+    
     # Convert NumPy array back to PIL Image
     transformed_image = Image.fromarray(transformed_image_np)
 
@@ -247,10 +250,35 @@ class PairedImagesDataset(Dataset):
         return ground_image, aerial_image, fov, yaw, pitch
     
 
-# class collate_fn_dino3():
+def get_transforms(processor, image_size, aerial_scaling):
+        
+    if isinstance(processor, tuple):
+        processor_ground, processor_aerial = processor
+    else:
+        processor_ground = processor
+        processor_aerial = processor
 
-#     def __init__(self):
-#         self.processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+    transform_ground = transforms.Compose([
+        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=processor_ground.image_mean,
+            std=processor_ground.image_std
+        )
+    ])
 
-#     def __call__(self, batch):
-#         return self.processor(images=batch, return_tensors="pt")
+    transform_aerial = transforms.Compose([
+        transforms.Resize((image_size*aerial_scaling, image_size*aerial_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+        transforms.CenterCrop((image_size, image_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=processor_aerial.image_mean,
+                            std=processor_aerial.image_std)
+    ])
+
+    return transform_ground, transform_aerial
+
+
+def denormalize(img_tensor, processor):
+    mean = torch.tensor(processor.image_mean).view(3, 1, 1).to(img_tensor.device)
+    std = torch.tensor(processor.image_std).view(3, 1, 1).to(img_tensor.device)
+    return img_tensor * std + mean

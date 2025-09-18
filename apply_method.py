@@ -72,6 +72,9 @@ def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=Fa
 
     # Normalize the depth map to the range [0, 1]
     depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
+    
+    # Ensure values are exactly within [0, 1] range
+    depth_map = np.clip(depth_map, 0.0, 1.0)
 
     # Calculate the size of each grid cell
     cell_height = height // grid_size
@@ -88,7 +91,8 @@ def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=Fa
             
             # Calculate the average depth value in the cell
             cell_depth = depth_map[start_y:end_y, start_x:end_x]
-            depth_map_grid[i, j] = np.mean(cell_depth)
+            # Ensure the mean value is also properly clipped
+            depth_map_grid[i, j] = np.clip(np.mean(cell_depth), 0.0, 1.0)
 
     # Visualize the depth map and downsampled depth map grid if in debug mode
     if debug:
@@ -427,7 +431,9 @@ def _save_separate_figures(results_dir, sample_id,
     for j, beta in enumerate(np.arange(0, 360, angle_step)):
         end_x = int(ctr[0] + radius * np.cos(np.deg2rad(beta)))
         end_y = int(ctr[1] - radius * np.sin(np.deg2rad(beta)))
-        color = plt.cm.plasma((distances[j] - min_dist) / (max_dist - min_dist) if max_dist > min_dist else 0.0)
+        normalized_dist = (distances[j] - min_dist) / (max_dist - min_dist) if max_dist > min_dist else 0.0
+        normalized_dist = np.clip(normalized_dist, 0.0, 1.0)
+        color = plt.cm.plasma(normalized_dist)
         ax_r.plot([ctr[0], end_x], [ctr[1], end_y], color=color)
     # ax_r.set_title("Aerial with Distance Rays", fontsize=16, fontweight='bold')
     ax_r.axis('off')
@@ -463,7 +469,14 @@ def test(model, backbone, loss, data_loader, device, savepath='untitled', create
     depth_model = AutoModelForDepthEstimation.from_pretrained("LiheYoung/depth-anything-small-hf")
 
     if 'dinov3' in backbone:
-        dino3_processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+        dino_processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+    elif 'dinov2' in backbone:
+        # dino_processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
+        dino_processor = AutoImageProcessor.from_pretrained(
+            "facebook/dinov2-base",
+            size={"height": image_size * aerial_scaling, "width": image_size * aerial_scaling},
+            crop_size={"height": image_size, "width": image_size}
+        )
 
     delta_yaws = []
 
@@ -486,9 +499,10 @@ def test(model, backbone, loss, data_loader, device, savepath='untitled', create
             for i in range(batch_size):  # Iterate over batch size
                 ground_image = ground_images[i:i+1]
                 aerial_image = aerial_images[i:i+1]
-                if 'dinov3' in backbone:
-                    ground_inputs = dino3_processor(images=ground_image, return_tensors="pt").to(device)
-                    aerial_inputs = dino3_processor(images=aerial_image, return_tensors="pt").to(device)
+                
+                if 'dinov3' in backbone or 'dinov2T' in backbone:
+                    ground_inputs = dino_processor(images=ground_image, return_tensors="pt").to(device)
+                    aerial_inputs = dino_processor(images=aerial_image, return_tensors="pt").to(device)
                 else:
                     ground_inputs = ground_image
                     aerial_inputs = aerial_image
@@ -513,14 +527,19 @@ def test(model, backbone, loss, data_loader, device, savepath='untitled', create
                     print("normalized_features2.shape:", normalized_features2.shape)
                     print("grid_size:", grid_size)
 
-                # Convert images to numpy for visualization
+                # Convert images to numpy for visualization and clip values to [0, 1]
                 ground_image_np = ground_image.squeeze().permute(1, 2, 0).detach().cpu().numpy()
+                ground_image_np = np.clip(ground_image_np, 0.0, 1.0)  # Clip values to [0, 1]
                 aerial_image_np = aerial_image.squeeze().permute(1, 2, 0).detach().cpu().numpy()
+                aerial_image_np = np.clip(aerial_image_np, 0.0, 1.0)  # Clip values to [0, 1]
 
-                ground_image_vis = ground_image.squeeze(0).cpu().numpy().transpose(1, 2, 0) * 255
-                aerial_image_vis = aerial_image.squeeze(0).cpu().numpy().transpose(1, 2, 0) * 255
-                ground_image_vis = ground_image_vis.astype(np.uint8)
-                aerial_image_vis = aerial_image_vis.astype(np.uint8)
+                # For the visualization with sky filter, convert to uint8
+                # Make sure we strictly clip values to [0, 1] before multiplication
+                ground_image_vis = np.clip(ground_image.squeeze(0).cpu().numpy().transpose(1, 2, 0), 0.0, 1.0) * 255
+                aerial_image_vis = np.clip(aerial_image.squeeze(0).cpu().numpy().transpose(1, 2, 0), 0.0, 1.0) * 255
+                # Clip again after multiplication to ensure strictly [0, 255]
+                ground_image_vis = np.clip(ground_image_vis, 0.0, 255.0).astype(np.uint8)
+                aerial_image_vis = np.clip(aerial_image_vis, 0.0, 255.0).astype(np.uint8)
 
                 # Apply sky filter
                 ground_image_no_sky, sky_mask, sky_grid = apply_sky_filter(sky_filter, ground_image_vis, grid_size=grid_size, debug=debug)
@@ -583,7 +602,10 @@ def test(model, backbone, loss, data_loader, device, savepath='untitled', create
                     for j, beta in enumerate(np.arange(0, 360, angle_step)):
                         end_x = int(center[0] + radius * np.cos(np.deg2rad(beta)))
                         end_y = int(center[1] - radius * np.sin(np.deg2rad(beta)))
-                        color = plt.cm.plasma((distances[j] - min_dist) / (max_dist - min_dist))  # Normalize distances for color map
+                        # Normalize distances for color map and ensure they're in [0, 1]
+                        normalized_dist = (distances[j] - min_dist) / (max_dist - min_dist) if max_dist > min_dist else 0.0
+                        normalized_dist = np.clip(normalized_dist, 0.0, 1.0)
+                        color = plt.cm.plasma(normalized_dist)
                         ax4.plot([center[0], end_x], [center[1], end_y], color=color)
                     ax4.set_title("Aerial Image with Distances")
                     ax4.axis('off')
@@ -720,10 +742,7 @@ if __name__ == '__main__':
 
     # Instantiate the dataset and dataloader
     paired_dataset = PairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground, cutout_from_pano=True)
-    if args.backbone == "dinov3":
-        data_loader = DataLoader(paired_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    else:
-        data_loader = DataLoader(paired_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    data_loader = DataLoader(paired_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
     # Define the Device
     device = "cuda" if torch.cuda.is_available() else "cpu"

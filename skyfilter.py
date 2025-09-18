@@ -307,11 +307,13 @@ class SkyFilter():
         """
         Process an image array directly without needing a file path.
         """
-        img = np.array(img_array / 255., dtype=np.float32)
+        # Ensure input is within valid range for processing
+        img_array_safe = np.clip(img_array, 0, 255)
+        img = np.array(img_array_safe / 255., dtype=np.float32)
         mask = self.get_mask(img)
         mask = cv2.bitwise_not(mask)
 
         # Apply the mask to remove the sky
-        ground_image_no_sky = cv2.bitwise_and(img_array, img_array, mask=mask)
+        ground_image_no_sky = cv2.bitwise_and(img_array_safe, img_array_safe, mask=mask)
         
         return ground_image_no_sky, mask

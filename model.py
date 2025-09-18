@@ -23,7 +23,7 @@ from transformers import CLIPProcessor, CLIPModel
 from sklearn.preprocessing import normalize
 from torchinfo import summary
 
-from transformers import ViTImageProcessor, AutoModel
+from transformers import ViTImageProcessor, AutoModel, AutoImageProcessor
 
 import warnings
 warnings.simplefilter("ignore", category=UserWarning)
@@ -85,34 +85,35 @@ class CrossviewModel(nn.Module):
                 for param in self.feature_extractor.parameters():
                     param.requires_grad = False
 
+        elif backbone == "dinov2T":
+            
+            self.model = AutoModel.from_pretrained('facebook/dinov2-base')
+
+            self.patch_size = self.model.config.patch_size
+
         elif backbone == "dinov3":
 
-            self.processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
             self.model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
 
             self.patch_size = self.model.config.patch_size
 
         elif backbone == "dinov3_crossview":
 
-            self.ground_processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
             self.ground_model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
-
-            self.aerial_processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
             self.aerial_model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
 
             self.patch_size = self.ground_model.config.patch_size
 
         elif backbone == 'dinov3_sat':
 
-            self.processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
             self.model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
 
             self.patch_size = self.model.config.patch_size
 
     def _forward_dinov3_crossview(self, ground_input, aerial_input, debug=False):
 
-        ground_outputs = self.ground_model(**ground_input)
-        aerial_outputs = self.aerial_model(**aerial_input)
+        ground_outputs = self.ground_model(ground_input)
+        aerial_outputs = self.aerial_model(aerial_input)
 
         ground_batch_size, _, ground_img_height, ground_img_width = ground_input.pixel_values.shape
         aerial_batch_size, _, aerial_img_height, aerial_img_width = aerial_input.pixel_values.shape
@@ -178,10 +179,10 @@ class CrossviewModel(nn.Module):
         ground_tokens = self.norm(ground_tokens)
         aerial_tokens = self.norm(aerial_tokens)
 
-        ground_tokens = ground_tokens[:, 1:, :]
         ground_cls = ground_tokens[:, :1, :]
-        aerial_tokens = aerial_tokens[:, 1:, :]
+        ground_tokens = ground_tokens[:, 1:, :]
         aerial_cls = aerial_tokens[:, :1, :]
+        aerial_tokens = aerial_tokens[:, 1:, :]
 
         
         if debug:
@@ -194,13 +195,43 @@ class CrossviewModel(nn.Module):
 
         return ground_tokens, aerial_tokens
 
-    def _forward_dinov3(self, ground_input, aerial_input, debug=False):
+    def _forward_dinov2T(self, ground_input, aerial_input, debug=False):
 
-        ground_outputs = self.model(**ground_input)
-        aerial_outputs = self.model(**aerial_input)
+        ground_outputs = self.model(ground_input)
+        aerial_outputs = self.model(aerial_input)
 
         ground_batch_size, _, ground_img_height, ground_img_width = ground_input.pixel_values.shape
+        ground_num_patches_height, ground_num_patches_width = ground_img_height // self.patch_size, ground_img_width // self.patch_size
+        ground_num_patches_flat = ground_num_patches_height * ground_num_patches_width
+
         aerial_batch_size, _, aerial_img_height, aerial_img_width = aerial_input.pixel_values.shape
+        aerial_num_patches_height, aerial_num_patches_width = aerial_img_height // self.patch_size, aerial_img_width // self.patch_size
+        aerial_num_patches_flat = aerial_num_patches_height * aerial_num_patches_width
+
+        ground_last_hidden_states = ground_outputs[0]
+        assert ground_last_hidden_states.shape == (ground_batch_size, 1 + ground_num_patches_flat, self.model.config.hidden_size)
+
+        aerial_last_hidden_states = aerial_outputs[0]
+        assert aerial_last_hidden_states.shape == (aerial_batch_size, 1 + aerial_num_patches_flat, self.model.config.hidden_size)
+
+        ground_cls_token = ground_last_hidden_states[:, 0, :]
+        ground_patch_features_flat = ground_last_hidden_states[:, 1:, :]
+        ground_patch_features = ground_patch_features_flat.unflatten(1, (ground_num_patches_height, ground_num_patches_width))
+
+        aerial_cls_token = aerial_last_hidden_states[:, 0, :]
+        aerial_patch_features_flat = aerial_last_hidden_states[:, 1:, :]
+        aerial_patch_features = aerial_patch_features_flat.unflatten(1, (aerial_num_patches_height, aerial_num_patches_width))
+
+
+        return ground_patch_features_flat, aerial_patch_features_flat
+
+    def _forward_dinov3(self, ground_input, aerial_input, debug=False):
+
+        ground_outputs = self.model(ground_input)
+        aerial_outputs = self.model(aerial_input)
+
+        ground_batch_size, _, ground_img_height, ground_img_width = ground_input.shape
+        aerial_batch_size, _, aerial_img_height, aerial_img_width = aerial_input.shape
 
         ground_num_patches_height, ground_num_patches_width = ground_img_height // self.patch_size, ground_img_width // self.patch_size
         aerial_num_patches_height, aerial_num_patches_width = aerial_img_height // self.patch_size, aerial_img_width // self.patch_size
@@ -242,6 +273,8 @@ class CrossviewModel(nn.Module):
             return self._forward_clip(ground_input, aerial_input, debug)
         elif self.backbone == 'dinov2':
             return self._forward_dinov2(ground_input, aerial_input, debug)
+        elif self.backbone == 'dinov2T':
+            return self._forward_dinov2T(ground_input, aerial_input, debug)
         elif self.backbone == 'resnet50':
             return self._forward_resnet50(ground_input, aerial_input, debug)
         elif self.backbone == 'dinov3':
@@ -561,3 +594,29 @@ class CosineSimilarityLossCustom(nn.Module):
             products.append(np.dot(vert_token, rad_token))
 
         return 1 - np.mean(products)
+    
+
+def get_processors(backbone):
+
+    if backbone == 'clip':
+        processor_ground = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
+        processor_aerial = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
+    elif backbone == 'dinov2':
+        processor_ground = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
+        processor_aerial = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
+    elif backbone == 'dinov3':
+        processor_ground = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+        processor_aerial = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+    elif backbone == 'dinov3_crossview':
+        processor_ground = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+        processor_aerial = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
+    elif backbone == 'dinov3_sat':
+        processor_ground = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
+        processor_aerial = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
+    else:
+        raise ValueError("Unsupported backbone: {}".format(backbone))
+    
+    return (processor_ground, processor_aerial)
+
+
+        
