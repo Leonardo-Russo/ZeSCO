@@ -1,22 +1,19 @@
-from networkx import center
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import normalize
 from torch.utils.data import Dataset, DataLoader
 import os
-import random
 import argparse
 from tqdm import tqdm
-import re
 
-from dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images
-# from dataloader_vigor import DataLoader_VIGOR
-from model import CrossviewModel, CosineSimilarityLoss, CosineSimilarityLossCustom
-from skyfilter import SkyFilter
+from dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images, get_transforms, denormalize
+from model import CrossviewModel, CosineSimilarityLoss, CosineSimilarityLossCustom, get_processors
+from utils import get_averaged_vertical_tokens, get_averaged_radial_tokens, find_alignment, _next_sample_id, _save_separate_figures
+
+from skyfilter import SkyFilter, apply_sky_filter
+from depther import apply_depth_estimation
+
 
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 from transformers import ViTImageProcessor, AutoModel
@@ -27,439 +24,15 @@ from transformers import logging
 logging.set_verbosity_error()
 warnings.filterwarnings("ignore")
 
-import matplotlib
 # matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
 
 
-def apply_depth_estimation(model, image_processor, image, grid_size=16, debug=False):
-    """
-    Applies depth estimation to the image, and returns the depth map along with
-    a downsampled version of the depth map on a 16x16 grid where each grid cell
-    contains the average depth value of the pixels in that cell.
-    
-    Parameters:
-    - model: The depth estimation model.
-    - image_processor: The processor for the depth estimation model.
-    - image: The image to be processed for depth estimation.
-    - grid_size: The size of the token grid (default is 16).
-    - debug: Enable visualization of intermediate steps (default is False).
+def test(model, processors, loss, data_loader, device, savepath='untitled', threshold=0.4, create_figs=False, debug=False, save_mode='combined'):
 
-    Returns:
-    - depth_map: The estimated depth map for the image.
-    - depth_map_grid: The downsampled 16x16 depth map, containing average depth values.
-    """
-    # Prepare image for the model
-    inputs = image_processor(images=image, return_tensors="pt")
-
-    # Dimensions of the image
-    height, width = image.shape[:2]
-
-    # Get the predicted depth
-    with torch.no_grad():
-        outputs = model(**inputs)
-        predicted_depth = outputs.predicted_depth
-
-    # Interpolate to the original image size
-    prediction = torch.nn.functional.interpolate(
-        predicted_depth.unsqueeze(1),
-        size=image.shape[:2][::-1],  # [width, height]
-        mode="bicubic",
-        align_corners=False,
-    )
-
-    # Convert the tensor to a NumPy array and remove extra dimensions
-    depth_map = prediction.squeeze().cpu().numpy()
-
-    # Normalize the depth map to the range [0, 1]
-    depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
-    
-    # Ensure values are exactly within [0, 1] range
-    depth_map = np.clip(depth_map, 0.0, 1.0)
-
-    # Calculate the size of each grid cell
-    cell_height = height // grid_size
-    cell_width = width // grid_size
-
-    # Create the downsampled depth map grid
-    depth_map_grid = np.zeros((grid_size, grid_size), dtype=np.float32)
-    for i in range(grid_size):
-        for j in range(grid_size):
-            start_x = j * cell_width
-            start_y = i * cell_height
-            end_x = (j + 1) * cell_width if j < grid_size - 1 else width
-            end_y = (i + 1) * cell_height if i < grid_size - 1 else height
-            
-            # Calculate the average depth value in the cell
-            cell_depth = depth_map[start_y:end_y, start_x:end_x]
-            # Ensure the mean value is also properly clipped
-            depth_map_grid[i, j] = np.clip(np.mean(cell_depth), 0.0, 1.0)
-
-    # Visualize the depth map and downsampled depth map grid if in debug mode
-    if debug:
-        plt.figure(figsize=(18, 8))
-        plt.subplot(131)
-        plt.imshow(image)
-        plt.title('Original Image')
-        plt.axis('off')
-        plt.subplot(132)
-        plt.imshow(depth_map, cmap='plasma')
-        plt.colorbar()
-        plt.title('Depth Map')
-        plt.axis('off')
-        plt.subplot(133)
-        plt.imshow(depth_map_grid, cmap='plasma')
-        plt.colorbar()
-        plt.title('Downsampled Depth Map (16x16 Grid)')
-        plt.axis('off')
-        plt.show()
-
-    return depth_map, depth_map_grid
-
-def apply_sky_filter(sky_filter, ground_image_vis, grid_size, debug=False):
-    """
-    Applies a sky filter to remove the sky from an image.
-    Parameters:
-    - sky_filter: The sky filter object used to process the image.
-    - ground_image_vis: The original image with the sky.
-    - grid_size: The size of the grid used for dividing the image.
-    - debug: Optional parameter to enable visualization of intermediate steps. Default is False.
-    Returns:
-    - ground_image_no_sky: The image with the sky removed.
-    - sky_mask: The binary mask indicating the sky regions in the image.
-    - grid_mask: The binary mask indicating the ground regions in the image grid.
-    The function applies the sky filter to the ground_image_vis to remove the sky from the image. It then divides the image into a grid of cells and determines whether each cell is sky or ground based on the majority voting of the corresponding region in the sky mask. The resulting image with the sky removed, the sky mask, and the grid mask are returned.
-    If debug is set to True, the function also visualizes the original image, the sky mask, the image without sky, and the grid mask.
-    """
-
-    # Process the image array directly
-    ground_image_no_sky, sky_mask = sky_filter.run_img_array(ground_image_vis)
-
-    # Dimensions of the image
-    height, width = ground_image_no_sky.shape[:2]
-
-    # Calculate the size of each grid cell
-    cell_height = height // grid_size
-    cell_width = width // grid_size
-
-    # Initialize the grid mask
-    grid_mask = np.zeros((grid_size, grid_size), dtype=np.uint8)
-
-    # Loop over each cell in the grid
-    for i in range(grid_size):
-        for j in range(grid_size):
-            # Define the region of interest (ROI) for this cell
-            start_x = j * cell_width
-            start_y = i * cell_height
-            end_x = (j + 1) * cell_width if j < grid_size - 1 else width
-            end_y = (i + 1) * cell_height if i < grid_size - 1 else height
-            
-            # Extract the cell from the sky mask
-            cell = sky_mask[start_y:end_y, start_x:end_x]
-            
-            # Apply majority voting: if more than half of the cell is sky, mark it as sky
-            if np.mean(cell) > 127:  # Since the mask is binary, 127 is the midpoint
-                grid_mask[i, j] = 1  # Mark as ground
-            else:
-                grid_mask[i, j] = 0  # Mark as ground
-
-    # Visualize the original image, mask, sky-removed image and grid mask
-    if debug:
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 18))
-        ax1.imshow(ground_image_vis)
-        ax1.set_title("Original Image")
-        ax1.axis('off')
-        ax2.imshow(sky_mask, cmap='gray')
-        ax2.set_title("Sky Mask")
-        ax2.axis('off')
-        ax3.imshow(ground_image_no_sky)
-        ax3.set_title("Image Without Sky")
-        ax3.axis('off')
-        ax4.imshow(grid_mask, cmap='gray')
-        ax4.set_title("Grid Mask")
-        ax4.axis('off')
-        plt.show()
-
-    return ground_image_no_sky, sky_mask, grid_mask
-
-def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=16):
-    """
-    Retrieves direction tokens and their corresponding indices based on the given angle or vertical index.
-    Parameters:
-    - tokens (ndarray): The array of tokens.
-    - angle (float, optional): The angle in degrees for radial direction. Defaults to None.
-    - vertical_idx (int, optional): The vertical index for vertical line. Defaults to None.
-    - grid_size (int, optional): The size of the grid. Defaults to 16.
-    Returns:
-    - direction_tokens (ndarray): The array of direction tokens.
-    - indices (list): The list of indices corresponding to the direction tokens.
-    Notes:
-    - If angle is provided, the function retrieves direction tokens in a radial direction.
-    - If vertical_idx is provided, the function retrieves direction tokens in a vertical line.
-    - The function returns an empty array if neither angle nor vertical_idx is provided.
-    - The function stops retrieving tokens if they are out of bounds.
-    """
-    
-    if angle is not None:  # Radial direction
-        center = (grid_size // 2, grid_size // 2)
-        direction_tokens = []
-        indices = []
-        for r in range(grid_size):
-            delta = 4
-            x = round(center[0] + r * np.cos(np.deg2rad(angle)))
-            y = round(center[1] - r * np.sin(np.deg2rad(angle)))
-            if 0 <= x < grid_size and 0 <= y < grid_size:
-                idx = y * grid_size + x
-                if tokens is None:
-                    direction_tokens.append(None)
-                    indices.append((y, x))
-                else:
-                    if idx < tokens.shape[0]:  # Ensure index is within bounds
-                        direction_tokens.append(tokens[idx])
-                        indices.append((y, x))
-                    else:
-                        break  # Stop if out of bounds
-            else:
-                break  # Stop if out of bounds
-        return np.array(direction_tokens), indices
-    elif vertical_idx is not None:  # Vertical line
-        direction_tokens = tokens[vertical_idx::grid_size]  # extract each vertical line
-        return direction_tokens, [(i, vertical_idx) for i in range(grid_size)]
-        
-def find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, image_span, debug=False):
-    """
-    Finds the alignment between averaged vertical tokens and averaged radial tokens.
-    Parameters:
-    - averaged_vertical_tokens (ndarray): A numpy array containing the averaged vertical tokens.
-    - averaged_radial_tokens (ndarray): A numpy array containing the averaged radial tokens.
-    - grid_size (int): The size of the grid.
-    - image_span (float): The span of the image.
-    Returns:
-    - best_orientation (float): The best orientation in degrees.
-    - distances (list): A list of distances for each orienta'ption.
-    - min_distance (float): The minimum distance.
-    - confidence (float): The confidence score.
-    """
-
-    angle_step = image_span / grid_size
-    min_distance = float('inf')
-    distances = []
-
-    for j, beta in enumerate(np.arange(0, 360, angle_step)):
-        cone_distance = 0
-        for i in range(grid_size+1):
-
-            fore_rad_avg_token = fore_rad_avg_tokens[int(j + i - grid_size/2) % fore_rad_avg_tokens.shape[0]]
-            midd_rad_avg_token = midd_rad_avg_tokens[int(j + i - grid_size/2) % midd_rad_avg_tokens.shape[0]]
-            back_rad_avg_token = back_rad_avg_tokens[int(j + i - grid_size/2) % back_rad_avg_tokens.shape[0]]
-            # print(f"beta: {beta:.2f} \tangle: {(j + i - grid_size/2)*angle_step} \tindex: {int(j + i - grid_size/2) % averaged_radial_tokens.shape[0]}")       
-
-            vert_avg_tokens = np.vstack((fore_vert_avg_tokens[(grid_size-1)-i], midd_vert_avg_tokens[(grid_size-1)-i], back_vert_avg_tokens[(grid_size-1)-i]))            
-            rad_avg_tokens = np.vstack((fore_rad_avg_token, midd_rad_avg_token, back_rad_avg_token))
-
-            cone_distance += loss(vert_avg_tokens, rad_avg_tokens)
-
-        cone_distance /= grid_size
-        if cone_distance < min_distance:
-            min_distance = cone_distance
-            best_orientation = beta
-            if debug:
-                print(f"Min Distance: {min_distance:.4f} \tBest Orientation: {best_orientation}°")
-        distances.append(cone_distance)
-
-    # Compute confidence
-    mean_distance = np.mean(distances)
-    std_distance = np.std(distances)
-    confidence = (mean_distance - min_distance) / std_distance  # Z-score
-
-    return best_orientation, distances, min_distance, confidence
-
-def get_averaged_vertical_tokens(angle_step, normalized_features1, grid_size, sky_grid, depth_map_grid, threshold=0.5):
-    
-    averaged_foreground_tokens = []
-    averaged_middleground_tokens = []
-    averaged_background_tokens = []
-    for i in range(grid_size):
-        vertical_tokens, indices = get_direction_tokens(normalized_features1, vertical_idx=i, grid_size=grid_size)
-        valid_tokens = []
-        foreground_weights = []
-        middleground_weights = []
-        background_weights = []
-        for token, (y, x) in zip(vertical_tokens, indices):
-            if sky_grid[y, x] == 1:  # 1 indicates ground, 0 indicates sky
-                valid_tokens.append(token)
-                foreground_weights.append(depth_map_grid[y, x])
-                if depth_map_grid[y, x] <= 0.5:
-                    middleground_weights.append((1 / threshold) * depth_map_grid[y, x])
-                else:
-                    middleground_weights.append((1 - depth_map_grid[y, x]) / depth_map_grid[y, x])
-                background_weights.append(1 - depth_map_grid[y, x])
-        
-        if valid_tokens:
-            valid_tokens = np.array(valid_tokens)
-            foreground_weights = np.array(foreground_weights)
-            middleground_weights = np.array(middleground_weights)
-            background_weights = np.array(background_weights)
-            foreground_weights /= np.sum(foreground_weights)  # Normalize the weights
-            middleground_weights /= np.sum(middleground_weights)
-            background_weights /= np.sum(background_weights)
-            
-            # Calculate weighted average only on valid (non-sky) tokens
-            foreground_avg = np.average(valid_tokens, axis=0, weights=foreground_weights)
-            middleground_avg = np.average(valid_tokens, axis=0, weights=middleground_weights)
-            background_avg = np.average(valid_tokens, axis=0, weights=background_weights)
-            averaged_foreground_tokens.append(foreground_avg)
-            averaged_middleground_tokens.append(middleground_avg)
-            averaged_background_tokens.append(background_avg)
-        else:
-            # If no valid tokens are found (i.e., entire column is sky), append a zero vector or any placeholder
-            averaged_foreground_tokens.append(np.zeros_like(vertical_tokens[0]))
-            averaged_middleground_tokens.append(np.zeros_like(vertical_tokens[0]))
-            averaged_background_tokens.append(np.zeros_like(vertical_tokens[0]))
-    
-    averaged_foreground_tokens = np.array(averaged_foreground_tokens)
-    averaged_middleground_tokens = np.array(averaged_middleground_tokens)
-    averaged_background_tokens = np.array(averaged_background_tokens)
-
-    return averaged_foreground_tokens, averaged_middleground_tokens, averaged_background_tokens
-
-def get_averaged_radial_tokens(angle_step, normalized_features2, grid_size, sky_grid, depth_map_grid):
-    
-    averaged_fore_radial_tokens = []
-    averaged_middle_radial_tokens = []
-    averaged_back_radial_tokens = []
-    for beta in np.arange(0, 360, angle_step):
-        radial_tokens, _ = get_direction_tokens(normalized_features2, angle=beta, grid_size=grid_size)
-        increasing_weights = np.linspace(0, 1, len(radial_tokens))
-        decreasing_weights = np.linspace(1, 0, len(radial_tokens))
-
-        # Ensure middle_weights has the same length as radial_tokens
-        half_len = len(radial_tokens) // 2
-        middle_weights = np.hstack((np.linspace(0, 1, half_len, endpoint=False), np.linspace(1, 0, len(radial_tokens) - half_len)))
-
-        increasing_weights /= np.sum(increasing_weights)
-        decreasing_weights /= np.sum(decreasing_weights)
-        middle_weights /= np.sum(middle_weights)
-
-        # print("radial tokens:", radial_tokens.shape)
-        # print("middle weights:", middle_weights.shape)
-
-        foreground_avg = np.average(radial_tokens, axis=0, weights=decreasing_weights)
-        middleground_avg = np.average(radial_tokens, axis=0, weights=middle_weights)
-        background_avg = np.average(radial_tokens, axis=0, weights=increasing_weights)
-
-        averaged_fore_radial_tokens.append(foreground_avg)
-        averaged_middle_radial_tokens.append(middleground_avg)
-        averaged_back_radial_tokens.append(background_avg)
-
-    averaged_fore_radial_tokens = np.array(averaged_fore_radial_tokens)         # 64x768
-    averaged_middle_radial_tokens = np.array(averaged_middle_radial_tokens)
-    averaged_back_radial_tokens = np.array(averaged_back_radial_tokens)
-
-    return averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens
-
-def _next_sample_id(results_dir: str) -> int:
-    """Compute the next integer sample id based on existing files named like 'sample_#_... .png' or 'sample_#.png'."""
-    if not os.path.exists(results_dir):
-        return 0
-    ids = []
-    pattern = re.compile(r"^sample_(\d+)(?:_|\.)")
-    for name in os.listdir(results_dir):
-        m = pattern.match(name)
-        if m:
-            try:
-                ids.append(int(m.group(1)))
-            except ValueError:
-                pass
-    return max(ids) + 1 if ids else 0
-
-
-def _save_separate_figures(results_dir, sample_id,
-                           ground_image_np, aerial_image_np,
-                           best_orientation, yaw,
-                           angle_step, distances):
-    """Save the 4 separate images corresponding to the 2x2 combined figure."""
-    # 1) Ground image
-    fig_g, ax_g = plt.subplots(figsize=(6, 6))
-    ax_g.imshow(ground_image_np)
-    ax_g.set_title("Yaw: {:.1f}°".format(yaw), fontsize=16, fontweight='bold')
-    ax_g.axis('off')
-    fig_g.savefig(os.path.join(results_dir, f"sample_{sample_id}_ground.png"), dpi=300, bbox_inches='tight')
-    plt.close(fig_g)
-
-    # 2) Aerial with predicted vs GT orientation
-    fig_a, ax_a = plt.subplots(figsize=(6, 6))
-    ax_a.imshow(aerial_image_np)
-    radius = aerial_image_np.shape[0] // 2
-    ctr = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-    end_x = int(ctr[0] + radius * np.cos(np.deg2rad(best_orientation)))
-    end_y = int(ctr[1] - radius * np.sin(np.deg2rad(best_orientation)))
-    end_x_GT = int(ctr[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
-    end_y_GT = int(ctr[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
-    ax_a.plot([ctr[0], end_x], [ctr[1], end_y], color='red', linestyle='--', label='Prediction')
-    ax_a.plot([ctr[0], end_x_GT], [ctr[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
-    delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
-    ax_a.set_title("Orientation Error: {:.4f}°".format(delta_yaw), fontsize=16, fontweight='bold')
-    ax_a.legend(loc='upper right')
-    ax_a.axis('off')
-    fig_a.savefig(os.path.join(results_dir, f"sample_{sample_id}_aerial_overlay.png"), dpi=300, bbox_inches='tight')
-    plt.close(fig_a)
-
-    # 3) Distance over orientations plot
-    fig_d, ax_d = plt.subplots(figsize=(6, 6))
-    ax_d.plot(np.arange(0, 360, angle_step), distances)
-    # Confidence from distances
-    mean_distance = float(np.mean(distances))
-    std_distance = float(np.std(distances))
-    min_distance = float(np.min(distances))
-    confidence = (mean_distance - min_distance) / std_distance if std_distance > 0 else 0.0
-    # ax_d.set_title("Distance vs Orientation", fontsize=16, fontweight='bold')
-    ax_d.grid(True)
-    ax_d.set_xlabel('Orientation (deg)')
-    ax_d.set_ylabel('Distance')
-    ax_d.set_xlim(0, 360)
-    ax_d.set_ylim(min(distances), max(distances))
-    fig_d.savefig(os.path.join(results_dir, f"sample_{sample_id}_distance_curve.png"), dpi=300, bbox_inches='tight')
-    plt.close(fig_d)
-
-    # 4) Aerial image with rays colored by distance magnitude
-    fig_r, ax_r = plt.subplots(figsize=(6, 6))
-    ax_r.imshow(aerial_image_np)
-    radius = aerial_image_np.shape[0] // 2
-    ctr = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-    min_dist = min(distances)
-    max_dist = max(distances)
-    for j, beta in enumerate(np.arange(0, 360, angle_step)):
-        end_x = int(ctr[0] + radius * np.cos(np.deg2rad(beta)))
-        end_y = int(ctr[1] - radius * np.sin(np.deg2rad(beta)))
-        normalized_dist = (distances[j] - min_dist) / (max_dist - min_dist) if max_dist > min_dist else 0.0
-        normalized_dist = np.clip(normalized_dist, 0.0, 1.0)
-        color = plt.cm.plasma(normalized_dist)
-        ax_r.plot([ctr[0], end_x], [ctr[1], end_y], color=color)
-    # ax_r.set_title("Aerial with Distance Rays", fontsize=16, fontweight='bold')
-    ax_r.axis('off')
-    # colorbar
-    norm = plt.Normalize(min_dist, max_dist)
-    sm = plt.cm.ScalarMappable(cmap='plasma', norm=norm)
-    sm.set_array([])
-    # plt.colorbar(sm, ax=ax_r)
-    fig_r.savefig(os.path.join(results_dir, f"sample_{sample_id}_aerial_rays.png"), dpi=300, bbox_inches='tight')
-    plt.close(fig_r)
-
-
-def test(model, backbone, loss, data_loader, device, savepath='untitled', create_figs=False, debug=False, save_mode='combined'):
-
-    # Create results directory if it doesn't exist
+    # Create results directory and retrieve batch size
     results_dir = os.path.join('results', savepath)
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
-
-    # Define Loss Functionù
-    if loss == 'cosine_similarity':
-        loss = CosineSimilarityLoss()
-    elif loss == 'cosine_similarity_custom':
-        loss = CosineSimilarityLossCustom()
-    else:
-        raise ValueError('The loss provided is not implemented.')
 
     # Initialize the sky filter
     sky_filter = SkyFilter() 
@@ -468,78 +41,63 @@ def test(model, backbone, loss, data_loader, device, savepath='untitled', create
     image_processor_depth = AutoImageProcessor.from_pretrained("LiheYoung/depth-anything-small-hf")
     depth_model = AutoModelForDepthEstimation.from_pretrained("LiheYoung/depth-anything-small-hf")
 
-    if 'dinov3' in backbone:
-        dino_processor = ViTImageProcessor.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
-    elif 'dinov2' in backbone:
-        # dino_processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
-        dino_processor = AutoImageProcessor.from_pretrained(
-            "facebook/dinov2-base",
-            size={"height": image_size * aerial_scaling, "width": image_size * aerial_scaling},
-            crop_size={"height": image_size, "width": image_size}
-        )
-
+    # Core Processing Loop
     delta_yaws = []
-
-    threshold = 0.4
-    batch_size = data_loader.batch_size
-
-    with tqdm(enumerate(data_loader), total=len(data_loader)*batch_size, desc="Processing Batches") as pbar:
-        for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in pbar:
+    # Calculate total images for correct progress bar
+    total_images = len(data_loader.dataset)
+    with tqdm(total=total_images, desc="Processing Images") as pbar:
+        for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in enumerate(data_loader):
             ground_images = ground_images.to(device)
             aerial_images = aerial_images.to(device)
-
-            batch_size = ground_images.size(0)
+            batch_size = ground_images.size(0)  # Get actual batch size (might be smaller for last batch)
 
             if debug:
                 print(f"Batch {batch_idx}: fovs", fovs)
                 print(f"Batch {batch_idx}: yaws", yaws)
                 print(f"Batch {batch_idx}: pitchs", pitchs)
 
-            # Assuming you want to handle each image in the batch individually
+            # Forward pass through the model
+            ground_tokens, aerial_tokens = model(ground_images, aerial_images, debug=False)
+            fov_x, fov_y = fovs
+
+            # Process each image in the batch individually
+            # Note: batch_size is already defined above
             for i in range(batch_size):  # Iterate over batch size
                 ground_image = ground_images[i:i+1]
                 aerial_image = aerial_images[i:i+1]
-                
-                if 'dinov3' in backbone or 'dinov2T' in backbone:
-                    ground_inputs = dino_processor(images=ground_image, return_tensors="pt").to(device)
-                    aerial_inputs = dino_processor(images=aerial_image, return_tensors="pt").to(device)
-                else:
-                    ground_inputs = ground_image
-                    aerial_inputs = aerial_image
-                fov_x, fov_y = fovs
                 fov = (fov_x[i].item(), fov_y[i].item())
                 yaw = yaws[i].item()
                 pitch = pitchs[i].item()
                 
-                # Forward pass through the model
-                ground_tokens, aerial_tokens = model(ground_inputs, aerial_inputs, debug=False)
-                normalized_features1 = ground_tokens.squeeze().detach().cpu().numpy()
-                normalized_features2 = aerial_tokens.squeeze().detach().cpu().numpy()
-                
+                # Extract features for the i-th image in the batch
+                ground_features = ground_tokens[i:i+1].squeeze().detach().cpu().numpy()
+                aerial_features = aerial_tokens[i:i+1].squeeze().detach().cpu().numpy()
+
                 # Calculate grid size from actual token dimensions
-                grid_size = int(np.sqrt(normalized_features1.shape[0]))  # assuming square grid
+                grid_size = int(np.sqrt(ground_features.shape[0]))  # assuming square grid
                 
                 if debug:
                     print("fov", fov)
                     print("yaw", yaw)
                     print("pitch", pitch)
-                    print("normalized_features1.shape:", normalized_features1.shape)
-                    print("normalized_features2.shape:", normalized_features2.shape)
+                    print("normalized_features1.shape:", ground_features.shape)
+                    print("normalized_features2.shape:", aerial_features.shape)
                     print("grid_size:", grid_size)
 
-                # Convert images to numpy for visualization and clip values to [0, 1]
-                ground_image_np = ground_image.squeeze().permute(1, 2, 0).detach().cpu().numpy()
-                ground_image_np = np.clip(ground_image_np, 0.0, 1.0)  # Clip values to [0, 1]
-                aerial_image_np = aerial_image.squeeze().permute(1, 2, 0).detach().cpu().numpy()
-                aerial_image_np = np.clip(aerial_image_np, 0.0, 1.0)  # Clip values to [0, 1]
+                # Convert images to numpy for visualization
+                if processors is not None:
+                    ground_image_denorm = denormalize(ground_image.squeeze(), processors[0])
+                    aerial_image_denorm = denormalize(aerial_image.squeeze(), processors[1])
+                    ground_image_np = ground_image_denorm.permute(1, 2, 0).detach().cpu().numpy()
+                    aerial_image_np = aerial_image_denorm.permute(1, 2, 0).detach().cpu().numpy()
+                else:
+                    raise ValueError("Processors must be provided for image denormalization.")
 
                 # For the visualization with sky filter, convert to uint8
-                # Make sure we strictly clip values to [0, 1] before multiplication
-                ground_image_vis = np.clip(ground_image.squeeze(0).cpu().numpy().transpose(1, 2, 0), 0.0, 1.0) * 255
-                aerial_image_vis = np.clip(aerial_image.squeeze(0).cpu().numpy().transpose(1, 2, 0), 0.0, 1.0) * 255
-                # Clip again after multiplication to ensure strictly [0, 255]
-                ground_image_vis = np.clip(ground_image_vis, 0.0, 255.0).astype(np.uint8)
-                aerial_image_vis = np.clip(aerial_image_vis, 0.0, 255.0).astype(np.uint8)
+                ground_image_vis = ground_image_np * 255
+                aerial_image_vis = aerial_image_np * 255
+                ground_image_vis = ground_image_vis.astype(np.uint8)
+                aerial_image_vis = aerial_image_vis.astype(np.uint8)
 
                 # Apply sky filter
                 ground_image_no_sky, sky_mask, sky_grid = apply_sky_filter(sky_filter, ground_image_vis, grid_size=grid_size, debug=debug)
@@ -547,19 +105,19 @@ def test(model, backbone, loss, data_loader, device, savepath='untitled', create
                 # Apply depth estimation
                 depth_map, depth_map_grid = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, grid_size=grid_size, debug=debug)
 
-                fov_x = 90                          # horizontal fov in degrees
-                angle_step = fov_x / grid_size
-            
+                fov_x_i = fov_x[i].item()                          # horizontal fov in degrees
+                angle_step = fov_x_i / grid_size
+
                 # Compute Averaged Tokens using the weight vector, excluding sky tokens
-                fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, normalized_features1, grid_size, sky_grid, depth_map_grid, threshold=threshold)
-                fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, normalized_features2, grid_size, sky_grid, depth_map_grid)
+                fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, ground_features, grid_size, sky_grid, depth_map_grid, threshold=threshold)
+                fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, aerial_features, grid_size, sky_grid, depth_map_grid)
                 
                 if debug:
                     print("averaged vertical tokens: ", fore_vert_avg_tokens.shape)
                     print("averaged radial tokens: ", fore_rad_avg_tokens.shape)   
 
                 # Find the best alignment
-                best_orientation, distances, min_distance, confidence = find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, fov_x, debug=False)
+                best_orientation, distances, min_distance, confidence = find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, fov_x_i, debug=False)
 
                 delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
                 delta_yaws.append(delta_yaw)
@@ -635,11 +193,16 @@ def test(model, backbone, loss, data_loader, device, savepath='untitled', create
                     # Close combined fig if it was created
                     plt.close(fig)
 
-                # Update pbar to show current delta_yaws average
-                pbar.set_postfix({'Delta Yaw': np.mean(delta_yaws)})
-                pbar.update()
+                # Update progress bar with current results
+                pbar.set_postfix({
+                    'Delta Yaw': f"{np.mean(delta_yaws):.2f}°", 
+                    'Batch': f"{batch_idx+1}/{len(data_loader)}"
+                })
+                pbar.update(1)  # Increment by 1 for each image processed
 
-    pbar.close()
+            # After processing all images in the batch, no need for extra updates
+            
+    # Progress bar auto-closes with the context manager
 
     # Output the delta_yaw errors
     delta_yaws = np.array(delta_yaws)
@@ -667,12 +230,12 @@ def test(model, backbone, loss, data_loader, device, savepath='untitled', create
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test CRODINO')
+    parser.add_argument('--name', '-n', type=str, default='untitled', help='Path to save the model and results')
     parser.add_argument('--backbone', '-b', type=str, default='dinov2', help='Model to use')
-    parser.add_argument('--loss', '-l', type=str, default='cosine_similarity_custom', help='Loss to use for the Orientation Estimation')
+    parser.add_argument('--loss', '-l', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--dataset', '-d', type=str, default='cvusa_subset', help='Dataset to use')
-    parser.add_argument('--save_path', '-p', type=str, default='untitled', help='Path to save the model and results')
     parser.add_argument('--debug', '-db', type=str, default='False', help='Debug mode')
-    parser.add_argument('--create_figs', '-s', type=str, default='False', help='Create figures')
+    parser.add_argument('--create_figs', '-s', type=str, default='true', help='Create figures')
     parser.add_argument('--save_mode', '-m', type=str, default='separate', choices=['combined', 'separate', 'both'],
                         help='Save only the combined 2x2 figure, only the 4 separate figures, or both')
     args = parser.parse_args()
@@ -711,34 +274,17 @@ if __name__ == '__main__':
         # for filename in test_filenames:
         #     print(filename)
 
+
+
     # Settings
     image_size = 224
     aerial_scaling = 2
     provide_paths = False
     BATCH_SIZE = 8
 
-    transform_ground = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Resize((image_size, image_size)),
-        transforms.CenterCrop((image_size, image_size))
-    ])
-
-    if args.backbone == 'dinov3_crossview':
-        transform_aerial = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Resize((image_size*aerial_scaling, image_size*aerial_scaling), antialias=True),
-            transforms.CenterCrop((image_size, image_size)),
-            transforms.Normalize(
-                mean=(0.430, 0.411, 0.296),
-                std=(0.213, 0.156, 0.143),
-            )
-        ])    
-    else:
-        transform_aerial = transforms.Compose([
-            transforms.Resize((image_size*aerial_scaling, image_size*aerial_scaling)),
-            transforms.CenterCrop((image_size, image_size)),
-            transforms.ToTensor()
-        ])    
+    # Get the processor and transforms
+    processors = get_processors(args.backbone)
+    transform_ground, transform_aerial = get_transforms(processors, image_size, aerial_scaling)
 
     # Instantiate the dataset and dataloader
     paired_dataset = PairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground, cutout_from_pano=True)
@@ -748,15 +294,26 @@ if __name__ == '__main__':
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
+    # Define Loss Function
+    if args.loss == 'cosine_similarity':
+        loss = CosineSimilarityLoss()
+    elif args.loss == 'cosine_similarity_custom':
+        loss = CosineSimilarityLossCustom()
+    else:
+        raise ValueError('The loss provided is not implemented.')
+
     # Load the Model
     model = CrossviewModel(backbone=args.backbone, frozen=True).to(device)
+    grid_size = (image_size // model.patch_size, image_size // model.patch_size)
+    print(f"Model patch size: {model.patch_size}, grid size: {grid_size}")
+    model.show()
 
     test(model,
-         args.backbone,
-         args.loss,
+         processors,
+         loss,
          data_loader,
          device,
-         savepath=args.save_path,
+         savepath=args.name,
          create_figs=args.create_figs.lower() == 'true',
          debug=args.debug.lower() == 'true',
          save_mode=args.save_mode)
