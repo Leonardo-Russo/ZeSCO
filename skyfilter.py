@@ -14,6 +14,8 @@ import re
 
 import matplotlib.pyplot as plt
 
+import torch.nn as nn
+
 
 # This version should match the tag in the repository
 version = "v1.0.6"
@@ -106,16 +108,82 @@ def guided_filter(img, guide, radius, eps):
 # Use GPU if it is available, otherwise CPU
 provider = "CUDAExecutionProvider" if "CUDAExecutionProvider" in ort.get_available_providers() else "CPUExecutionProvider"
 
-class SkyFilter():
+class SkyFilter(nn.Module):
 
-    def __init__(self, model = default_model_url, ignore_cache = False, width = 384, height = 384):
-
+    def __init__(self, model=default_model_url, ignore_cache=False, width=384, height=384, grid_size: tuple = (16, 16)):
+        super(SkyFilter, self).__init__()
         self.model = model
         self.ignore_cache = ignore_cache
         self.width, self.height = width, height
+        self.grid_size = grid_size
 
         print(' ?> Using provider %s' % provider)
         self.load_model()
+
+    def forward(self, ground_image_vis, debug=False):
+        """
+        Applies a sky filter to remove the sky from an image.
+        Parameters:
+        - ground_image_vis: The original image with the sky.
+        - grid_size: The size of the grid used for dividing the image.
+        - debug: Optional parameter to enable visualization of intermediate steps. Default is False.
+        Returns:
+        - ground_image_no_sky: The image with the sky removed.
+        - sky_mask: The binary mask indicating the sky regions in the image.
+        - grid_mask: The binary mask indicating the ground regions in the image grid.
+        The function applies the sky filter to the ground_image_vis to remove the sky from the image. It then divides the image into a grid of cells and determines whether each cell is sky or ground based on the majority voting of the corresponding region in the sky mask. The resulting image with the sky removed, the sky mask, and the grid mask are returned.
+        If debug is set to True, the function also visualizes the original image, the sky mask, the image without sky, and the grid mask.
+        """
+
+        # Process the image array directly
+        ground_image_no_sky, sky_mask = self.run_img_array(ground_image_vis)
+
+        # Dimensions of the image
+        height, width = ground_image_no_sky.shape[:2]
+
+        # Calculate the size of each grid cell
+        cell_height = height // self.grid_size[0]
+        cell_width = width // self.grid_size[1]
+
+        # Initialize the grid mask
+        grid_mask = np.zeros((self.grid_size[0], self.grid_size[1]), dtype=np.uint8)
+
+        # Loop over each cell in the grid
+        for i in range(self.grid_size[0]):
+            for j in range(self.grid_size[1]):
+                # Define the region of interest (ROI) for this cell
+                start_x = j * cell_width
+                start_y = i * cell_height
+                end_x = (j + 1) * cell_width if j < self.grid_size[1] - 1 else width
+                end_y = (i + 1) * cell_height if i < self.grid_size[0] - 1 else height
+                
+                # Extract the cell from the sky mask
+                cell = sky_mask[start_y:end_y, start_x:end_x]
+                
+                # Apply majority voting: if more than half of the cell is sky, mark it as sky
+                if np.mean(cell) > 127:  # Since the mask is binary, 127 is the midpoint
+                    grid_mask[i, j] = 1  # Mark as ground
+                else:
+                    grid_mask[i, j] = 0  # Mark as ground
+
+        # Visualize the original image, mask, sky-removed image and grid mask
+        if debug:
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 18))
+            ax1.imshow(ground_image_vis)
+            ax1.set_title("Original Image")
+            ax1.axis('off')
+            ax2.imshow(sky_mask, cmap='gray')
+            ax2.set_title("Sky Mask")
+            ax2.axis('off')
+            ax3.imshow(ground_image_no_sky)
+            ax3.set_title("Image Without Sky")
+            ax3.axis('off')
+            ax4.imshow(grid_mask, cmap='gray')
+            ax4.set_title("Grid Mask")
+            ax4.axis('off')
+            plt.show()
+
+        return ground_image_no_sky, sky_mask, grid_mask
 
     
     def load_model(self):
@@ -321,68 +389,3 @@ class SkyFilter():
         return ground_image_no_sky, mask
 
 
-def apply_sky_filter(sky_filter, ground_image_vis, grid_size, debug=False):
-    """
-    Applies a sky filter to remove the sky from an image.
-    Parameters:
-    - sky_filter: The sky filter object used to process the image.
-    - ground_image_vis: The original image with the sky.
-    - grid_size: The size of the grid used for dividing the image.
-    - debug: Optional parameter to enable visualization of intermediate steps. Default is False.
-    Returns:
-    - ground_image_no_sky: The image with the sky removed.
-    - sky_mask: The binary mask indicating the sky regions in the image.
-    - grid_mask: The binary mask indicating the ground regions in the image grid.
-    The function applies the sky filter to the ground_image_vis to remove the sky from the image. It then divides the image into a grid of cells and determines whether each cell is sky or ground based on the majority voting of the corresponding region in the sky mask. The resulting image with the sky removed, the sky mask, and the grid mask are returned.
-    If debug is set to True, the function also visualizes the original image, the sky mask, the image without sky, and the grid mask.
-    """
-
-    # Process the image array directly
-    ground_image_no_sky, sky_mask = sky_filter.run_img_array(ground_image_vis)
-
-    # Dimensions of the image
-    height, width = ground_image_no_sky.shape[:2]
-
-    # Calculate the size of each grid cell
-    cell_height = height // grid_size
-    cell_width = width // grid_size
-
-    # Initialize the grid mask
-    grid_mask = np.zeros((grid_size, grid_size), dtype=np.uint8)
-
-    # Loop over each cell in the grid
-    for i in range(grid_size):
-        for j in range(grid_size):
-            # Define the region of interest (ROI) for this cell
-            start_x = j * cell_width
-            start_y = i * cell_height
-            end_x = (j + 1) * cell_width if j < grid_size - 1 else width
-            end_y = (i + 1) * cell_height if i < grid_size - 1 else height
-            
-            # Extract the cell from the sky mask
-            cell = sky_mask[start_y:end_y, start_x:end_x]
-            
-            # Apply majority voting: if more than half of the cell is sky, mark it as sky
-            if np.mean(cell) > 127:  # Since the mask is binary, 127 is the midpoint
-                grid_mask[i, j] = 1  # Mark as ground
-            else:
-                grid_mask[i, j] = 0  # Mark as ground
-
-    # Visualize the original image, mask, sky-removed image and grid mask
-    if debug:
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 18))
-        ax1.imshow(ground_image_vis)
-        ax1.set_title("Original Image")
-        ax1.axis('off')
-        ax2.imshow(sky_mask, cmap='gray')
-        ax2.set_title("Sky Mask")
-        ax2.axis('off')
-        ax3.imshow(ground_image_no_sky)
-        ax3.set_title("Image Without Sky")
-        ax3.axis('off')
-        ax4.imshow(grid_mask, cmap='gray')
-        ax4.set_title("Grid Mask")
-        ax4.axis('off')
-        plt.show()
-
-    return ground_image_no_sky, sky_mask, grid_mask

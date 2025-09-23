@@ -1,0 +1,525 @@
+(cvg) PS C:\Users\russ_le\Projects\CroDINO> python .\apply_method.py --name fix_22 --backbone dinov3
+panos
+Using device: cuda
+Model patch size: 16, grid size: (14, 14)
+
+
+=====================================================================================
+
+CrossviewModel(
+  (model): DINOv3ViTModel(
+    (embeddings): DINOv3ViTEmbeddings(
+      (patch_embeddings): Conv2d(3, 1024, kernel_size=(16, 16), stride=(16, 16))
+    )
+    (rope_embeddings): DINOv3ViTRopePositionEmbedding()
+    (layer): ModuleList(
+      (0-23): 24 x DINOv3ViTLayer(
+        (norm1): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+        (attention): DINOv3ViTAttention(
+          (k_proj): Linear(in_features=1024, out_features=1024, bias=False)
+          (v_proj): Linear(in_features=1024, out_features=1024, bias=True)
+          (q_proj): Linear(in_features=1024, out_features=1024, bias=True)
+          (o_proj): Linear(in_features=1024, out_features=1024, bias=True)
+        )
+        (layer_scale1): DINOv3ViTLayerScale()
+        (drop_path): Identity()
+        (norm2): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+        (mlp): DINOv3ViTMLP(
+          (up_proj): Linear(in_features=1024, out_features=4096, bias=True)
+          (down_proj): Linear(in_features=4096, out_features=1024, bias=True)
+          (act_fn): GELUActivation()
+        )
+        (layer_scale2): DINOv3ViTLayerScale()
+      )
+    )
+    (norm): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+  )
+)
+===========================================================================
+Layer (type:depth-idx)                             Param #
+===========================================================================
+CrossviewModel                                     --
+├─DINOv3ViTModel: 1-1                              --
+│    └─DINOv3ViTEmbeddings: 2-1                    6,144
+│    │    └─Conv2d: 3-1                            787,456
+│    └─DINOv3ViTRopePositionEmbedding: 2-2         --
+│    └─ModuleList: 2-3                             --
+│    │    └─DINOv3ViTLayer: 3-2                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-3                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-4                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-5                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-6                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-7                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-8                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-9                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-10                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-11                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-12                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-13                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-14                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-15                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-16                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-17                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-18                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-19                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-20                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-21                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-22                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-23                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-24                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-25                   12,597,248
+│    └─LayerNorm: 2-4                              2,048
+===========================================================================
+Total params: 303,129,600
+Trainable params: 303,129,600
+Non-trainable params: 0
+===========================================================================
+ ?> Using provider CPUExecutionProvider
+ -> Loading the model
+ ?> The model is valid!
+Processing Images: 100%|██████████████████████████████| 177/177 [20:54<00:00,  7.09s/it, Delta Yaw=53.39°, Batch=23/23]
+Mean Delta Yaw Error: 53.39305891848265
+Standard Deviation of Delta Yaw Error: 61.78302402121406
+Median Delta Yaw Error: 20.142857142857167
+(cvg) PS C:\Users\russ_le\Projects\CroDINO> python .\apply_method.py --name fix_22_v2 --backbone dinov2
+panos
+Using device: cuda
+Using cache found in C:\Users\russ_le/.cache\torch\hub\facebookresearch_dinov2_main
+Model patch size: 14, grid size: (16, 16)
+
+
+=====================================================================================
+
+CrossviewModel(
+  (original_model): DinoVisionTransformer(
+    (patch_embed): PatchEmbed(
+      (proj): Conv2d(3, 768, kernel_size=(14, 14), stride=(14, 14))
+      (norm): Identity()
+    )
+    (blocks): ModuleList(
+      (0-11): 12 x NestedTensorBlock(
+        (norm1): LayerNorm((768,), eps=1e-06, elementwise_affine=True)
+        (attn): MemEffAttention(
+          (qkv): Linear(in_features=768, out_features=2304, bias=True)
+          (attn_drop): Dropout(p=0.0, inplace=False)
+          (proj): Linear(in_features=768, out_features=768, bias=True)
+          (proj_drop): Dropout(p=0.0, inplace=False)
+        )
+        (ls1): LayerScale()
+        (drop_path1): Identity()
+        (norm2): LayerNorm((768,), eps=1e-06, elementwise_affine=True)
+        (mlp): Mlp(
+          (fc1): Linear(in_features=768, out_features=3072, bias=True)
+          (act): GELU(approximate='none')
+          (fc2): Linear(in_features=3072, out_features=768, bias=True)
+          (drop): Dropout(p=0.0, inplace=False)
+        )
+        (ls2): LayerScale()
+        (drop_path2): Identity()
+      )
+    )
+    (norm): LayerNorm((768,), eps=1e-06, elementwise_affine=True)
+    (head): Identity()
+  )
+  (patch_embed): PatchEmbed(
+    (proj): Conv2d(3, 768, kernel_size=(14, 14), stride=(14, 14))
+    (norm): Identity()
+  )
+  (blocks): ModuleList(
+    (0-11): 12 x NestedTensorBlock(
+      (norm1): LayerNorm((768,), eps=1e-06, elementwise_affine=True)
+      (attn): MemEffAttention(
+        (qkv): Linear(in_features=768, out_features=2304, bias=True)
+        (attn_drop): Dropout(p=0.0, inplace=False)
+        (proj): Linear(in_features=768, out_features=768, bias=True)
+        (proj_drop): Dropout(p=0.0, inplace=False)
+      )
+      (ls1): LayerScale()
+      (drop_path1): Identity()
+      (norm2): LayerNorm((768,), eps=1e-06, elementwise_affine=True)
+      (mlp): Mlp(
+        (fc1): Linear(in_features=768, out_features=3072, bias=True)
+        (act): GELU(approximate='none')
+        (fc2): Linear(in_features=3072, out_features=768, bias=True)
+        (drop): Dropout(p=0.0, inplace=False)
+      )
+      (ls2): LayerScale()
+      (drop_path2): Identity()
+    )
+  )
+  (norm): LayerNorm((768,), eps=1e-06, elementwise_affine=True)
+  (head): Identity()
+)
+======================================================================
+Layer (type:depth-idx)                        Param #
+======================================================================
+CrossviewModel                                --
+├─DinoVisionTransformer: 1-1                  1,053,696
+│    └─PatchEmbed: 2-1                        --
+│    │    └─Conv2d: 3-1                       (452,352)
+│    │    └─Identity: 3-2                     --
+│    └─ModuleList: 2-2                        --
+│    │    └─NestedTensorBlock: 3-3            (7,089,408)
+│    │    └─NestedTensorBlock: 3-4            (7,089,408)
+│    │    └─NestedTensorBlock: 3-5            (7,089,408)
+│    │    └─NestedTensorBlock: 3-6            (7,089,408)
+│    │    └─NestedTensorBlock: 3-7            (7,089,408)
+│    │    └─NestedTensorBlock: 3-8            (7,089,408)
+│    │    └─NestedTensorBlock: 3-9            (7,089,408)
+│    │    └─NestedTensorBlock: 3-10           (7,089,408)
+│    │    └─NestedTensorBlock: 3-11           (7,089,408)
+│    │    └─NestedTensorBlock: 3-12           (7,089,408)
+│    │    └─NestedTensorBlock: 3-13           (7,089,408)
+│    │    └─NestedTensorBlock: 3-14           (7,089,408)
+│    └─LayerNorm: 2-3                         (1,536)
+│    └─Identity: 2-4                          --
+├─PatchEmbed: 1-2                             (recursive)
+│    └─Conv2d: 2-5                            (recursive)
+│    └─Identity: 2-6                          --
+├─ModuleList: 1-3                             (recursive)
+│    └─NestedTensorBlock: 2-7                 (recursive)
+│    │    └─LayerNorm: 3-15                   (recursive)
+│    │    └─MemEffAttention: 3-16             (recursive)
+│    │    └─LayerScale: 3-17                  (recursive)
+│    │    └─Identity: 3-18                    --
+│    │    └─LayerNorm: 3-19                   (recursive)
+│    │    └─Mlp: 3-20                         (recursive)
+│    │    └─LayerScale: 3-21                  (recursive)
+│    │    └─Identity: 3-22                    --
+│    └─NestedTensorBlock: 2-8                 (recursive)
+│    │    └─LayerNorm: 3-23                   (recursive)
+│    │    └─MemEffAttention: 3-24             (recursive)
+│    │    └─LayerScale: 3-25                  (recursive)
+│    │    └─Identity: 3-26                    --
+│    │    └─LayerNorm: 3-27                   (recursive)
+│    │    └─Mlp: 3-28                         (recursive)
+│    │    └─LayerScale: 3-29                  (recursive)
+│    │    └─Identity: 3-30                    --
+│    └─NestedTensorBlock: 2-9                 (recursive)
+│    │    └─LayerNorm: 3-31                   (recursive)
+│    │    └─MemEffAttention: 3-32             (recursive)
+│    │    └─LayerScale: 3-33                  (recursive)
+│    │    └─Identity: 3-34                    --
+│    │    └─LayerNorm: 3-35                   (recursive)
+│    │    └─Mlp: 3-36                         (recursive)
+│    │    └─LayerScale: 3-37                  (recursive)
+│    │    └─Identity: 3-38                    --
+│    └─NestedTensorBlock: 2-10                (recursive)
+│    │    └─LayerNorm: 3-39                   (recursive)
+│    │    └─MemEffAttention: 3-40             (recursive)
+│    │    └─LayerScale: 3-41                  (recursive)
+│    │    └─Identity: 3-42                    --
+│    │    └─LayerNorm: 3-43                   (recursive)
+│    │    └─Mlp: 3-44                         (recursive)
+│    │    └─LayerScale: 3-45                  (recursive)
+│    │    └─Identity: 3-46                    --
+│    └─NestedTensorBlock: 2-11                (recursive)
+│    │    └─LayerNorm: 3-47                   (recursive)
+│    │    └─MemEffAttention: 3-48             (recursive)
+│    │    └─LayerScale: 3-49                  (recursive)
+│    │    └─Identity: 3-50                    --
+│    │    └─LayerNorm: 3-51                   (recursive)
+│    │    └─Mlp: 3-52                         (recursive)
+│    │    └─LayerScale: 3-53                  (recursive)
+│    │    └─Identity: 3-54                    --
+│    └─NestedTensorBlock: 2-12                (recursive)
+│    │    └─LayerNorm: 3-55                   (recursive)
+│    │    └─MemEffAttention: 3-56             (recursive)
+│    │    └─LayerScale: 3-57                  (recursive)
+│    │    └─Identity: 3-58                    --
+│    │    └─LayerNorm: 3-59                   (recursive)
+│    │    └─Mlp: 3-60                         (recursive)
+│    │    └─LayerScale: 3-61                  (recursive)
+│    │    └─Identity: 3-62                    --
+│    └─NestedTensorBlock: 2-13                (recursive)
+│    │    └─LayerNorm: 3-63                   (recursive)
+│    │    └─MemEffAttention: 3-64             (recursive)
+│    │    └─LayerScale: 3-65                  (recursive)
+│    │    └─Identity: 3-66                    --
+│    │    └─LayerNorm: 3-67                   (recursive)
+│    │    └─Mlp: 3-68                         (recursive)
+│    │    └─LayerScale: 3-69                  (recursive)
+│    │    └─Identity: 3-70                    --
+│    └─NestedTensorBlock: 2-14                (recursive)
+│    │    └─LayerNorm: 3-71                   (recursive)
+│    │    └─MemEffAttention: 3-72             (recursive)
+│    │    └─LayerScale: 3-73                  (recursive)
+│    │    └─Identity: 3-74                    --
+│    │    └─LayerNorm: 3-75                   (recursive)
+│    │    └─Mlp: 3-76                         (recursive)
+│    │    └─LayerScale: 3-77                  (recursive)
+│    │    └─Identity: 3-78                    --
+│    └─NestedTensorBlock: 2-15                (recursive)
+│    │    └─LayerNorm: 3-79                   (recursive)
+│    │    └─MemEffAttention: 3-80             (recursive)
+│    │    └─LayerScale: 3-81                  (recursive)
+│    │    └─Identity: 3-82                    --
+│    │    └─LayerNorm: 3-83                   (recursive)
+│    │    └─Mlp: 3-84                         (recursive)
+│    │    └─LayerScale: 3-85                  (recursive)
+│    │    └─Identity: 3-86                    --
+│    └─NestedTensorBlock: 2-16                (recursive)
+│    │    └─LayerNorm: 3-87                   (recursive)
+│    │    └─MemEffAttention: 3-88             (recursive)
+│    │    └─LayerScale: 3-89                  (recursive)
+│    │    └─Identity: 3-90                    --
+│    │    └─LayerNorm: 3-91                   (recursive)
+│    │    └─Mlp: 3-92                         (recursive)
+│    │    └─LayerScale: 3-93                  (recursive)
+│    │    └─Identity: 3-94                    --
+│    └─NestedTensorBlock: 2-17                (recursive)
+│    │    └─LayerNorm: 3-95                   (recursive)
+│    │    └─MemEffAttention: 3-96             (recursive)
+│    │    └─LayerScale: 3-97                  (recursive)
+│    │    └─Identity: 3-98                    --
+│    │    └─LayerNorm: 3-99                   (recursive)
+│    │    └─Mlp: 3-100                        (recursive)
+│    │    └─LayerScale: 3-101                 (recursive)
+│    │    └─Identity: 3-102                   --
+│    └─NestedTensorBlock: 2-18                (recursive)
+│    │    └─LayerNorm: 3-103                  (recursive)
+│    │    └─MemEffAttention: 3-104            (recursive)
+│    │    └─LayerScale: 3-105                 (recursive)
+│    │    └─Identity: 3-106                   --
+│    │    └─LayerNorm: 3-107                  (recursive)
+│    │    └─Mlp: 3-108                        (recursive)
+│    │    └─LayerScale: 3-109                 (recursive)
+│    │    └─Identity: 3-110                   --
+├─LayerNorm: 1-4                              (recursive)
+├─Identity: 1-5                               --
+======================================================================
+Total params: 86,580,480
+Trainable params: 1,053,696
+Non-trainable params: 85,526,784
+======================================================================
+ ?> Using provider CPUExecutionProvider
+ -> Loading the model
+ ?> The model is valid!
+Processing Images: 100%|██████████████████████████████| 177/177 [24:25<00:00,  8.28s/it, Delta Yaw=61.90°, Batch=23/23]
+Mean Delta Yaw Error: 61.8954802259887
+Standard Deviation of Delta Yaw Error: 63.484857847358576
+Median Delta Yaw Error: 27.375
+(cvg) PS C:\Users\russ_le\Projects\CroDINO> python .\apply_method.py --name fix_22_v3_cross --backbone dinov3_crossview
+panos
+Using device: cuda
+Model patch size: 16, grid size: (14, 14)
+
+
+=====================================================================================
+
+CrossviewModel(
+  (ground_model): DINOv3ViTModel(
+    (embeddings): DINOv3ViTEmbeddings(
+      (patch_embeddings): Conv2d(3, 1024, kernel_size=(16, 16), stride=(16, 16))
+    )
+    (rope_embeddings): DINOv3ViTRopePositionEmbedding()
+    (layer): ModuleList(
+      (0-23): 24 x DINOv3ViTLayer(
+        (norm1): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+        (attention): DINOv3ViTAttention(
+          (k_proj): Linear(in_features=1024, out_features=1024, bias=False)
+          (v_proj): Linear(in_features=1024, out_features=1024, bias=True)
+          (q_proj): Linear(in_features=1024, out_features=1024, bias=True)
+          (o_proj): Linear(in_features=1024, out_features=1024, bias=True)
+        )
+        (layer_scale1): DINOv3ViTLayerScale()
+        (drop_path): Identity()
+        (norm2): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+        (mlp): DINOv3ViTMLP(
+          (up_proj): Linear(in_features=1024, out_features=4096, bias=True)
+          (down_proj): Linear(in_features=4096, out_features=1024, bias=True)
+          (act_fn): GELUActivation()
+        )
+        (layer_scale2): DINOv3ViTLayerScale()
+      )
+    )
+    (norm): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+  )
+  (aerial_model): DINOv3ViTModel(
+    (embeddings): DINOv3ViTEmbeddings(
+      (patch_embeddings): Conv2d(3, 1024, kernel_size=(16, 16), stride=(16, 16))
+    )
+    (rope_embeddings): DINOv3ViTRopePositionEmbedding()
+    (layer): ModuleList(
+      (0-23): 24 x DINOv3ViTLayer(
+        (norm1): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+        (attention): DINOv3ViTAttention(
+          (k_proj): Linear(in_features=1024, out_features=1024, bias=False)
+          (v_proj): Linear(in_features=1024, out_features=1024, bias=True)
+          (q_proj): Linear(in_features=1024, out_features=1024, bias=True)
+          (o_proj): Linear(in_features=1024, out_features=1024, bias=True)
+        )
+        (layer_scale1): DINOv3ViTLayerScale()
+        (drop_path): Identity()
+        (norm2): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+        (mlp): DINOv3ViTMLP(
+          (up_proj): Linear(in_features=1024, out_features=4096, bias=True)
+          (down_proj): Linear(in_features=4096, out_features=1024, bias=True)
+          (act_fn): GELUActivation()
+        )
+        (layer_scale2): DINOv3ViTLayerScale()
+      )
+    )
+    (norm): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+  )
+)
+===========================================================================
+Layer (type:depth-idx)                             Param #
+===========================================================================
+CrossviewModel                                     --
+├─DINOv3ViTModel: 1-1                              --
+│    └─DINOv3ViTEmbeddings: 2-1                    6,144
+│    │    └─Conv2d: 3-1                            787,456
+│    └─DINOv3ViTRopePositionEmbedding: 2-2         --
+│    └─ModuleList: 2-3                             --
+│    │    └─DINOv3ViTLayer: 3-2                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-3                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-4                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-5                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-6                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-7                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-8                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-9                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-10                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-11                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-12                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-13                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-14                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-15                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-16                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-17                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-18                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-19                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-20                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-21                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-22                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-23                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-24                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-25                   12,597,248
+│    └─LayerNorm: 2-4                              2,048
+├─DINOv3ViTModel: 1-2                              --
+│    └─DINOv3ViTEmbeddings: 2-5                    6,144
+│    │    └─Conv2d: 3-26                           787,456
+│    └─DINOv3ViTRopePositionEmbedding: 2-6         --
+│    └─ModuleList: 2-7                             --
+│    │    └─DINOv3ViTLayer: 3-27                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-28                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-29                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-30                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-31                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-32                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-33                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-34                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-35                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-36                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-37                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-38                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-39                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-40                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-41                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-42                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-43                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-44                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-45                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-46                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-47                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-48                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-49                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-50                   12,597,248
+│    └─LayerNorm: 2-8                              2,048
+===========================================================================
+Total params: 606,259,200
+Trainable params: 606,259,200
+Non-trainable params: 0
+===========================================================================
+ ?> Using provider CPUExecutionProvider
+ -> Loading the model
+ ?> The model is valid!
+Processing Images: 100%|██████████████████████████████| 177/177 [28:46<00:00,  9.75s/it, Delta Yaw=93.59°, Batch=23/23]
+Mean Delta Yaw Error: 93.58999192897498
+Standard Deviation of Delta Yaw Error: 50.609851674449644
+Median Delta Yaw Error: 90.28571428571428
+(cvg) PS C:\Users\russ_le\Projects\CroDINO> python .\apply_method.py --name fix_22_v3_sat --backbone dinov3_sat
+panos
+Using device: cuda
+Model patch size: 16, grid size: (14, 14)
+
+
+=====================================================================================
+
+CrossviewModel(
+  (model): DINOv3ViTModel(
+    (embeddings): DINOv3ViTEmbeddings(
+      (patch_embeddings): Conv2d(3, 1024, kernel_size=(16, 16), stride=(16, 16))
+    )
+    (rope_embeddings): DINOv3ViTRopePositionEmbedding()
+    (layer): ModuleList(
+      (0-23): 24 x DINOv3ViTLayer(
+        (norm1): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+        (attention): DINOv3ViTAttention(
+          (k_proj): Linear(in_features=1024, out_features=1024, bias=False)
+          (v_proj): Linear(in_features=1024, out_features=1024, bias=True)
+          (q_proj): Linear(in_features=1024, out_features=1024, bias=True)
+          (o_proj): Linear(in_features=1024, out_features=1024, bias=True)
+        )
+        (layer_scale1): DINOv3ViTLayerScale()
+        (drop_path): Identity()
+        (norm2): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+        (mlp): DINOv3ViTMLP(
+          (up_proj): Linear(in_features=1024, out_features=4096, bias=True)
+          (down_proj): Linear(in_features=4096, out_features=1024, bias=True)
+          (act_fn): GELUActivation()
+        )
+        (layer_scale2): DINOv3ViTLayerScale()
+      )
+    )
+    (norm): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+  )
+)
+===========================================================================
+Layer (type:depth-idx)                             Param #
+===========================================================================
+CrossviewModel                                     --
+├─DINOv3ViTModel: 1-1                              --
+│    └─DINOv3ViTEmbeddings: 2-1                    6,144
+│    │    └─Conv2d: 3-1                            787,456
+│    └─DINOv3ViTRopePositionEmbedding: 2-2         --
+│    └─ModuleList: 2-3                             --
+│    │    └─DINOv3ViTLayer: 3-2                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-3                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-4                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-5                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-6                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-7                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-8                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-9                    12,597,248
+│    │    └─DINOv3ViTLayer: 3-10                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-11                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-12                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-13                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-14                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-15                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-16                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-17                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-18                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-19                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-20                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-21                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-22                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-23                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-24                   12,597,248
+│    │    └─DINOv3ViTLayer: 3-25                   12,597,248
+│    └─LayerNorm: 2-4                              2,048
+===========================================================================
+Total params: 303,129,600
+Trainable params: 303,129,600
+Non-trainable params: 0
+===========================================================================
+ ?> Using provider CPUExecutionProvider
+ -> Loading the model
+ ?> The model is valid!
+Processing Images: 100%|██████████████████████████████| 177/177 [24:36<00:00,  8.34s/it, Delta Yaw=77.94°, Batch=23/23]
+Mean Delta Yaw Error: 77.94269572235675
+Standard Deviation of Delta Yaw Error: 58.878866478260164
+Median Delta Yaw Error: 67.7142857142857
+(cvg) PS C:\Users\russ_le\Projects\CroDINO>

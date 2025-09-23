@@ -11,13 +11,8 @@ from dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_imag
 from model import CrossviewModel, CosineSimilarityLoss, CosineSimilarityLossCustom, get_processors
 from utils import get_averaged_vertical_tokens, get_averaged_radial_tokens, find_alignment, _next_sample_id, _save_separate_figures
 
-from skyfilter import SkyFilter, apply_sky_filter
-from depther import apply_depth_estimation
-
-
-from transformers import AutoImageProcessor, AutoModelForDepthEstimation
-from transformers import ViTImageProcessor, AutoModel
-import requests
+from skyfilter import SkyFilter
+from depther import DepthAnything
 
 import warnings
 from transformers import logging
@@ -34,18 +29,13 @@ def test(model, processors, loss, data_loader, device, savepath='untitled', thre
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
 
-    # Initialize the sky filter
-    sky_filter = SkyFilter() 
-
-    # Initialize the depth estimation model
-    image_processor_depth = AutoImageProcessor.from_pretrained("LiheYoung/depth-anything-small-hf")
-    depth_model = AutoModelForDepthEstimation.from_pretrained("LiheYoung/depth-anything-small-hf")
+    # Initialize the Sky Filter and DepthAnything
+    sky_filter = SkyFilter().to(device)
+    depth_anything = DepthAnything().to(device)
 
     # Core Processing Loop
     delta_yaws = []
-    # Calculate total images for correct progress bar
-    total_images = len(data_loader.dataset)
-    with tqdm(total=total_images, desc="Processing Images") as pbar:
+    with tqdm(total=len(data_loader.dataset), desc="Processing Images") as pbar:
         for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in enumerate(data_loader):
             ground_images = ground_images.to(device)
             aerial_images = aerial_images.to(device)
@@ -74,7 +64,7 @@ def test(model, processors, loss, data_loader, device, savepath='untitled', thre
                 aerial_features = aerial_tokens[i:i+1].squeeze().detach().cpu().numpy()
 
                 # Calculate grid size from actual token dimensions
-                grid_size = int(np.sqrt(ground_features.shape[0]))  # assuming square grid
+                grid_dim = int(np.sqrt(ground_features.shape[0]))  # assuming square grid
                 
                 if debug:
                     print("fov", fov)
@@ -82,7 +72,7 @@ def test(model, processors, loss, data_loader, device, savepath='untitled', thre
                     print("pitch", pitch)
                     print("normalized_features1.shape:", ground_features.shape)
                     print("normalized_features2.shape:", aerial_features.shape)
-                    print("grid_size:", grid_size)
+                    print("grid_size:", grid_dim)
 
                 # Convert images to numpy for visualization
                 if processors is not None:
@@ -100,26 +90,28 @@ def test(model, processors, loss, data_loader, device, savepath='untitled', thre
                 aerial_image_vis = aerial_image_vis.astype(np.uint8)
 
                 # Apply sky filter
-                ground_image_no_sky, sky_mask, sky_grid = apply_sky_filter(sky_filter, ground_image_vis, grid_size=grid_size, debug=debug)
+                ground_image_no_sky, sky_mask, sky_grid = sky_filter(ground_image_vis, grid_size=grid_dim, debug=debug)
 
                 # Apply depth estimation
-                depth_map, depth_map_grid = apply_depth_estimation(depth_model, image_processor_depth, ground_image_no_sky, grid_size=grid_size, debug=debug)
+                depth_map, depth_map_grid = depth_anything(ground_image_no_sky, grid_size=grid_dim, debug=debug)
 
                 fov_x_i = fov_x[i].item()                          # horizontal fov in degrees
-                angle_step = fov_x_i / grid_size
+                angle_step = fov_x_i / grid_dim
 
                 # Compute Averaged Tokens using the weight vector, excluding sky tokens
-                fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, ground_features, grid_size, sky_grid, depth_map_grid, threshold=threshold)
-                fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, aerial_features, grid_size, sky_grid, depth_map_grid)
+                fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, ground_features, grid_dim, sky_grid, depth_map_grid, threshold=threshold)
+                fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, aerial_features, grid_dim, sky_grid, depth_map_grid)
                 
                 if debug:
                     print("averaged vertical tokens: ", fore_vert_avg_tokens.shape)
                     print("averaged radial tokens: ", fore_rad_avg_tokens.shape)   
 
                 # Find the best alignment
-                best_orientation, distances, min_distance, confidence = find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, fov_x_i, debug=False)
+                best_orientation, distances, min_distance, confidence = find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_dim, fov_x_i, debug=False)
 
                 delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
+                if delta_yaw < 0:
+                    delta_yaw += 180
                 delta_yaws.append(delta_yaw)
 
                 if create_figs or debug:
@@ -259,6 +251,8 @@ if __name__ == '__main__':
     elif dataset_name.lower() == "cvglobal":
         dataset_path = r'D:\datasets\CVGlobal'
         train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=1, split_ratio=1, groundtype='panos')
+
+
     # elif dataset_name == "VIGOR":
     #     data_loader = DataLoader_VIGOR(mode='train')
     #     train_filenames = data_loader.train_list

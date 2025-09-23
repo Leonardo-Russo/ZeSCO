@@ -67,7 +67,8 @@ def find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_a
     min_distance = float('inf')
     distances = []
 
-    for j, beta in enumerate(np.arange(0, 360, angle_step)):
+    num_steps = int(round(360 / angle_step.item()))
+    for j, beta in enumerate(np.linspace(0, 360 - angle_step, num_steps)):
         cone_distance = 0
         for i in range(grid_size+1):
 
