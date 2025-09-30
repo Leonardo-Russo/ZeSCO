@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore")
 # matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
 
 
-def test(model, processors, loss, data_loader, device, savepath='untitled', threshold=0.4, create_figs=False, debug=False, save_mode='combined'):
+def test(model, processors, loss, data_loader, grid_size, device, savepath='untitled', threshold=0.4, create_figs=False, debug=False, save_mode='combined'):
 
     # Create results directory and retrieve batch size
     results_dir = os.path.join('results', savepath)
@@ -30,8 +30,8 @@ def test(model, processors, loss, data_loader, device, savepath='untitled', thre
         os.makedirs(results_dir)
 
     # Initialize the Sky Filter and DepthAnything
-    sky_filter = SkyFilter().to(device)
-    depth_anything = DepthAnything().to(device)
+    sky_filter = SkyFilter(grid_size=grid_size)
+    depth_anything = DepthAnything(grid_size=grid_size)
 
     # Core Processing Loop
     delta_yaws = []
@@ -90,10 +90,10 @@ def test(model, processors, loss, data_loader, device, savepath='untitled', thre
                 aerial_image_vis = aerial_image_vis.astype(np.uint8)
 
                 # Apply sky filter
-                ground_image_no_sky, sky_mask, sky_grid = sky_filter(ground_image_vis, grid_size=grid_dim, debug=debug)
+                ground_image_no_sky, sky_mask, sky_grid = sky_filter(ground_image_vis, debug=debug)
 
                 # Apply depth estimation
-                depth_map, depth_map_grid = depth_anything(ground_image_no_sky, grid_size=grid_dim, debug=debug)
+                depth_map, depth_map_grid = depth_anything(ground_image_no_sky, debug=debug)
 
                 fov_x_i = fov_x[i].item()                          # horizontal fov in degrees
                 angle_step = fov_x_i / grid_dim
@@ -306,6 +306,7 @@ if __name__ == '__main__':
          processors,
          loss,
          data_loader,
+         grid_size,
          device,
          savepath=args.name,
          create_figs=args.create_figs.lower() == 'true',
