@@ -85,7 +85,7 @@ class CrossviewModel(nn.Module):
 
         elif backbone == "dinov3":
 
-            self.model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+            self.model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m").eval()
             self.patch_size = self.model.config.patch_size
 
         elif backbone == "dinov3_crossview":

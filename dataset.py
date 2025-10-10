@@ -18,7 +18,7 @@ import random
 from transformers import ViTImageProcessor, AutoModel
 
 
-def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, groundtype='panos'):
+def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, groundtype='panos', zoom_level=19):
     """
     Function to sample a percentage of the dataset and split it into training and validation sets.
     
@@ -48,8 +48,7 @@ def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, gr
                 if image_id is None:
                     continue
 
-                zoom = 18  # Assuming zoom level 18
-                sat_path = os.path.join(satellite_dir, f'{zoom}/{image_id}.jpg')
+                sat_path = os.path.join(satellite_dir, f'{zoom_level}/{image_id}.jpg')
                 if os.path.exists(sat_path):
                     paired_filenames.append((ground_path, sat_path))
     
@@ -258,7 +257,29 @@ def get_transforms(processor, image_size, aerial_scaling):
         processor_ground = processor
         processor_aerial = processor
 
+    # transform_ground = transforms.Compose([
+    #     transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+    #     transforms.ToTensor(),
+    #     transforms.Normalize(
+    #         mean=processor_ground.image_mean,
+    #         std=processor_ground.image_std
+    #     )
+    # ])
+
+    # transform_ground = transforms.Compose([
+    #     transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+    #     transforms.Lambda(lambda img: transforms.functional.crop(img, int(img.size[1] * 0.15), 0, int(img.size[1] * 0.7), img.size[0])),
+    #     transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+    #     transforms.ToTensor(),
+    #     transforms.Normalize(
+    #         mean=processor_ground.image_mean,
+    #         std=processor_ground.image_std
+    #     )
+    # ])
+
     transform_ground = transforms.Compose([
+        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+        transforms.Lambda(lambda img: transforms.functional.crop(img, int(img.size[1] * 0.25), 0, int(img.size[1] * 0.5), img.size[0])),
         transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
         transforms.ToTensor(),
         transforms.Normalize(

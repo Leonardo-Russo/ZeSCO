@@ -47,7 +47,8 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
                 print(f"Batch {batch_idx}: pitchs", pitchs)
 
             # Forward pass through the model
-            ground_tokens, aerial_tokens = model(ground_images, aerial_images, debug=False)
+            with torch.no_grad():
+                ground_tokens, aerial_tokens = model(ground_images, aerial_images, debug=False)
             fov_x, fov_y = fovs
 
             # Process each image in the batch individually
@@ -223,9 +224,9 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test CRODINO')
     parser.add_argument('--name', '-n', type=str, default='untitled', help='Path to save the model and results')
-    parser.add_argument('--backbone', '-b', type=str, default='dinov2', help='Model to use')
+    parser.add_argument('--backbone', '-b', type=str, default='dinov3', help='Model to use')
     parser.add_argument('--loss', '-l', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
-    parser.add_argument('--dataset', '-d', type=str, default='cvusa_subset', help='Dataset to use')
+    parser.add_argument('--dataset', '-d', type=str, default='cvglobal', help='Dataset to use')
     parser.add_argument('--debug', '-db', type=str, default='False', help='Debug mode')
     parser.add_argument('--create_figs', '-s', type=str, default='true', help='Create figures')
     parser.add_argument('--save_mode', '-m', type=str, default='separate', choices=['combined', 'separate', 'both'],
@@ -249,8 +250,9 @@ if __name__ == '__main__':
         dataset_path = '/home/lrusso/CV-GLOBAL'
         train_filenames, _ = sample_cities_images(dataset_path, sample_percentage=0.005, split_ratio=0.1)
     elif dataset_name.lower() == "cvglobal":
-        dataset_path = r'D:\datasets\CVGlobal'
-        train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=1, split_ratio=1, groundtype='panos')
+        # dataset_path = r'D:\datasets\CVGlobal'
+        dataset_path = r'D:\cross_view_localization_DSM\Data\CVGlobal'
+        train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=0.02, split_ratio=1, groundtype='panos')
 
 
     # elif dataset_name == "VIGOR":
