@@ -107,7 +107,10 @@ CVUSA/
 ### Depth Weighting Schemes (for Ground Images)
 
 **Foreground Weights**:
-$$w_{\text{fore}}(d) = d$$
+
+$$
+w_{\text{fore}}(d) = d
+$$
 
 **Middleground Weights**:
 
@@ -119,7 +122,9 @@ w_{\text{mid}}(d) = \begin{cases}
 $$
 
 **Background Weights**:
-$$w_{\text{back}}(d) = 1 - d$$
+$$
+w_{\text{back}}(d) = 1 - d
+$$
 
 Where $d$ is the normalized depth value and $\tau$ is a threshold parameter.
 
