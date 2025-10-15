@@ -98,7 +98,7 @@ CVUSA/
 
 ### Feature Dimensions
 
-| Backbone | Patch Size | Grid Size (224×224) | Feature Dim |
+| Backbone | Patch Size | Tokens Grid Size  | Feature Dim |
 |----------|-----------|---------------------|-------------|
 | DINOv2   | 14        | 16×16               | 768         |
 | DINOv3   | 16        | 14×14               | 1024        |
