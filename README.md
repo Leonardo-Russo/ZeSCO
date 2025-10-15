@@ -122,6 +122,7 @@ w_{\text{mid}}(d) = \begin{cases}
 $$
 
 **Background Weights**:
+
 $$
 w_{\text{back}}(d) = 1 - d
 $$
