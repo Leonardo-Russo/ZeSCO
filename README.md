@@ -2,7 +2,6 @@
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ZeSCO (Zero-Shot Cross-View Orientation) is a novel zero-shot method for estimating camera orientation by matching ground-level panoramic images with aerial/satellite images. The method leverages pretrained vision transformers (DINOv2, DINOv3, CLIP) to align cross-view perspectives without requiring any task-specific training.
 
@@ -18,7 +17,7 @@ Cross-view geo-localization is challenging due to the dramatic viewpoint differe
 ### Key Features
 
 - 🔥 **Zero-shot approach** - No training required, works out-of-the-box
-- 🌍 **Multiple backbone support** - DINOv2, DINOv3 (ground/satellite variants), CLIP, ResNet50
+- 🌍 **Multiple backbone support** - DINOv2, DINOv3 (ground/satellite variants), CLIP
 - 🎯 **Depth-aware matching** - Incorporates monocular depth estimation for better feature weighting
 - ☁️ **Sky filtering** - Automatically removes sky regions that don't contribute to alignment
 - 📊 **Multi-dataset support** - Works with CVUSA, CV-Cities, CV-Global datasets
@@ -29,32 +28,30 @@ Cross-view geo-localization is challenging due to the dramatic viewpoint differe
 ### Method Pipeline
 
 ```
-Ground Image (Panorama)          Aerial Image (Satellite)
-       ↓                                  ↓
-   Backbone                           Backbone
-   (DINOv3)                          (DINOv3)
-       ↓                                  ↓
-   Patch Tokens                      Patch Tokens
-   (Grid: 16×16)                     (Grid: 16×16)
-       ↓                                  ↓
-   Sky Filter ←─────────────────────────┘
-   Depth Estimation
-       ↓
-   Vertical Averaging                Radial Averaging
-   (Column-wise)                     (Ray-wise)
-       ↓                                  ↓
-   Depth-weighted                    Distance-weighted
-   Aggregation                       Aggregation
-       ↓                                  ↓
-       └──────────→ Cosine Matching ←────┘
-                         ↓
-                  Best Orientation
+Ground Image (Panorama)                Aerial Image (Satellite)
+          ↓                                       ↓
+       Backbone                                Backbone
+       (DINOv3)                                (DINOv3)
+          ↓                                       ↓
+     Patch Tokens                            Patch Tokens
+    (Grid: 14×14)                           (Grid: 14×14)
+          ↓                                       │
+     Sky Filter                                   │
+   Depth Estimation                               │
+          ↓                                       ↓
+   Vertical Averaging                     Radial Averaging
+    (Column-wise)                            (Ray-wise)
+          ↓                                       ↓
+    Depth-weighted                         Distance-weighted
+     Aggregation                             Aggregation
+          │                                       │
+          └──────────→ Cosine Matching ←──────────┘
+                              ↓
+                      Best Orientation
 ```
 
 
 ## 🚀 Usage
-
-### Basic Example
 
 ```bash
 python apply_method.py \
@@ -64,8 +61,6 @@ python apply_method.py \
     --debug False \
     --save_mode separate
 ```
-
-### Command-Line Arguments
 
 | Argument | Short | Default | Description |
 |----------|-------|---------|-------------|
@@ -94,56 +89,6 @@ CVUSA/
         └── ...
 ```
 
-#### CV-Global
-
-```
-CVGlobal/
-├── streetview/
-│   └── panos/
-│       ├── 00000.jpg
-│       └── ...
-└── bingmap/
-    └── 19/
-        ├── 00000.jpg
-        └── ...
-```
-
-## 📊 Output
-
-Results are saved to `results/<experiment_name>/`:
-
-### Generated Files
-
-- **`sample_*_combined.png`** - 2×2 grid showing:
-  - Top-left: Ground panorama with original orientation
-  - Top-right: Aerial image with predicted and ground-truth orientations
-  - Bottom-left: Distance vs. orientation plot
-  - Bottom-right: Aerial image with color-coded distance rays
-
-- **`sample_*_ground.png`** - Ground image only
-- **`sample_*_aerial.png`** - Aerial image with orientation markers
-- **`sample_*_distance_plot.png`** - Distance curve
-- **`sample_*_aerial_distances.png`** - Colored distance visualization
-
-- **`delta_yaws_hist.png`** - Histogram of orientation errors
-- **`delta_yaws.pkl`** - Pickled array of all delta yaw values
-- **`info.txt`** - Statistical summary:
-
-```
-Delta Yaw Error Statistics
-==============================
-
-Total Samples: 1000
-
-Error Metrics:
----------------
-Mean Delta Yaw Error:       12.3456°
-Standard Deviation:         8.9012°
-Median Delta Yaw Error:     9.8765°
-Minimum Delta Yaw Error:    0.1234°
-Maximum Delta Yaw Error:    89.5678°
-```
-
 ## 🧪 Evaluation Metrics
 
 - **Mean Delta Yaw Error**: Average absolute difference between predicted and ground-truth orientation
@@ -160,20 +105,19 @@ Maximum Delta Yaw Error:    89.5678°
 | DINOv2   | 14        | 16×16               | 768         |
 | DINOv3   | 16        | 14×14               | 1024        |
 | CLIP     | 16        | 14×14               | 768         |
-| ResNet50 | 32        | 7×7                 | 2048        |
 
-### Depth Weighting Schemes
+### Depth Weighting Schemes (for Ground Images)
 
-**Foreground Weights** (Ground):
+**Foreground Weights**:
 $$w_{\text{fore}}(d) = d$$
 
-**Middleground Weights** (Ground):
+**Middleground Weights**:
 $$w_{\text{mid}}(d) = \begin{cases} 
 \frac{1}{\tau} d & \text{if } d \leq 0.5 \\
 \frac{1-d}{d} & \text{otherwise}
 \end{cases}$$
 
-**Background Weights** (Ground):
+**Background Weights**:
 $$w_{\text{back}}(d) = 1 - d$$
 
 Where $d$ is the normalized depth value and $\tau$ is a threshold parameter.
