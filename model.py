@@ -99,6 +99,10 @@ class CrossviewModel(nn.Module):
             self.model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
             self.patch_size = self.model.config.patch_size
 
+        if frozen:
+            for param in self.model.parameters():
+                param.requires_grad = False
+
     def _forward_dinov3_crossview(self, ground_input, aerial_input, debug=False):
 
         ground_outputs = self.ground_model(ground_input)

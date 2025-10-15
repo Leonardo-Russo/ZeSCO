@@ -1,11 +1,11 @@
 import numpy as np
 import torch
-import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 import os
 import argparse
 from tqdm import tqdm
+import pickle
 
 from dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images, get_transforms, denormalize
 from model import CrossviewModel, CosineSimilarityLoss, CosineSimilarityLossCustom, get_processors
@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore")
 # matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
 
 
-def test(model, processors, loss, data_loader, grid_size, device, savepath='untitled', threshold=0.4, create_figs=False, debug=False, save_mode='combined'):
+def test(model, processors, loss, data_loader, grid_size, device, savepath='untitled', threshold=0.4, debug=False, save_mode='combined'):
 
     # Create results directory and retrieve batch size
     results_dir = os.path.join('results', savepath)
@@ -115,76 +115,72 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
                     delta_yaw += 180
                 delta_yaws.append(delta_yaw)
 
-                if create_figs or debug:
+                fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
 
-                    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
+                ax1.imshow(ground_image_np)
+                ax1.set_title("Ground Image - Yaw: {:.1f}°".format(yaw))
+                ax1.axis('off')
 
-                    ax1.imshow(ground_image_np)
-                    ax1.set_title("Ground Image - Yaw: {:.1f}°".format(yaw))
-                    ax1.axis('off')
+                ax2.imshow(aerial_image_np)
+                radius = aerial_image_np.shape[0] // 2
+                center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
+                end_x = int(center[0] + radius * np.cos(np.deg2rad(best_orientation)))
+                end_y = int(center[1] - radius * np.sin(np.deg2rad(best_orientation)))
+                end_x_GT = int(center[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
+                end_y_GT = int(center[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
+                line_pred = ax2.plot([center[0], end_x], [center[1], end_y], color='red', linestyle='--', label='Prediction')
+                line_gt = ax2.plot([center[0], end_x_GT], [center[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
 
-                    ax2.imshow(aerial_image_np)
-                    radius = aerial_image_np.shape[0] // 2
-                    center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-                    end_x = int(center[0] + radius * np.cos(np.deg2rad(best_orientation)))
-                    end_y = int(center[1] - radius * np.sin(np.deg2rad(best_orientation)))
-                    end_x_GT = int(center[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
-                    end_y_GT = int(center[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
-                    line_pred = ax2.plot([center[0], end_x], [center[1], end_y], color='red', linestyle='--', label='Prediction')
-                    line_gt = ax2.plot([center[0], end_x_GT], [center[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
+                ax2.set_title("Aerial Image Orientation - Delta: {:.4f}°".format(delta_yaw))
+                ax2.legend(loc='upper right')
+                ax2.axis('off')
 
-                    ax2.set_title("Aerial Image Orientation - Delta: {:.4f}°".format(delta_yaw))
-                    ax2.legend(loc='upper right')
-                    ax2.axis('off')
+                ax3.plot(np.arange(0, 360, angle_step), distances)
+                ax3.set_title("Distance vs Orientation")
+                ax3.grid(True)
+                ax3.set_xlabel('Orientation')
+                ax3.set_ylabel('Distance')
+                ax3.set_xlim(0, 360)
+                ax3.set_ylim(min(distances), max(distances))
 
-                    ax3.plot(np.arange(0, 360, angle_step), distances)
-                    ax3.set_title("Distance vs Orientation")
-                    ax3.grid(True)
-                    ax3.set_xlabel('Orientation')
-                    ax3.set_ylabel('Distance')
-                    ax3.set_xlim(0, 360)
-                    ax3.set_ylim(min(distances), max(distances))
+                ax4.imshow(aerial_image_np)
+                radius = aerial_image_np.shape[0] // 2
+                center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
+                min_dist = min(distances)
+                max_dist = max(distances)
+                for j, beta in enumerate(np.arange(0, 360, angle_step)):
+                    end_x = int(center[0] + radius * np.cos(np.deg2rad(beta)))
+                    end_y = int(center[1] - radius * np.sin(np.deg2rad(beta)))
+                    # Normalize distances for color map and ensure they're in [0, 1]
+                    normalized_dist = (distances[j] - min_dist) / (max_dist - min_dist) if max_dist > min_dist else 0.0
+                    normalized_dist = np.clip(normalized_dist, 0.0, 1.0)
+                    color = plt.cm.plasma(normalized_dist)
+                    ax4.plot([center[0], end_x], [center[1], end_y], color=color)
+                ax4.set_title("Aerial Image with Distances")
+                ax4.axis('off')
 
-                    ax4.imshow(aerial_image_np)
-                    radius = aerial_image_np.shape[0] // 2
-                    center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-                    min_dist = min(distances)
-                    max_dist = max(distances)
-                    for j, beta in enumerate(np.arange(0, 360, angle_step)):
-                        end_x = int(center[0] + radius * np.cos(np.deg2rad(beta)))
-                        end_y = int(center[1] - radius * np.sin(np.deg2rad(beta)))
-                        # Normalize distances for color map and ensure they're in [0, 1]
-                        normalized_dist = (distances[j] - min_dist) / (max_dist - min_dist) if max_dist > min_dist else 0.0
-                        normalized_dist = np.clip(normalized_dist, 0.0, 1.0)
-                        color = plt.cm.plasma(normalized_dist)
-                        ax4.plot([center[0], end_x], [center[1], end_y], color=color)
-                    ax4.set_title("Aerial Image with Distances")
-                    ax4.axis('off')
+                norm = plt.Normalize(min_dist, max_dist)
+                sm = plt.cm.ScalarMappable(cmap='plasma', norm=norm)
+                sm.set_array([])
+                cbar = plt.colorbar(sm, ax=ax4)
 
-                    norm = plt.Normalize(min_dist, max_dist)
-                    sm = plt.cm.ScalarMappable(cmap='plasma', norm=norm)
-                    sm.set_array([])
-                    cbar = plt.colorbar(sm, ax=ax4)
+                # Determine the next available sample id (per group of images)
+                sample_id = _next_sample_id(results_dir)
 
-                    # Determine the next available sample id (per group of images)
-                    sample_id = _next_sample_id(results_dir)
+                # Save combined and/or separate figures depending on save_mode
+                if save_mode in ("combined", "both"):
+                    combined_path = os.path.join(results_dir, f"sample_{sample_id}_combined.png")
+                    plt.savefig(combined_path, dpi=300, bbox_inches='tight')
 
-                    # Save combined and/or separate figures depending on save_mode
-                    if create_figs and save_mode in ("combined", "both"):
-                        combined_path = os.path.join(results_dir, f"sample_{sample_id}_combined.png")
-                        plt.savefig(combined_path, dpi=300, bbox_inches='tight')
+                if save_mode in ("separate", "both"):
+                    _save_separate_figures(results_dir, sample_id,
+                                            ground_image_np, aerial_image_np,
+                                            best_orientation, yaw,
+                                            angle_step, distances)
+                if debug:
+                    plt.show()
 
-                    if create_figs and save_mode in ("separate", "both"):
-                        _save_separate_figures(results_dir, sample_id,
-                                               ground_image_np, aerial_image_np,
-                                               best_orientation, yaw,
-                                               angle_step, distances)
-
-                    if debug:
-                        plt.show()
-
-                    # Close combined fig if it was created
-                    plt.close(fig)
+                plt.close(fig)
 
                 # Update progress bar with current results
                 pbar.set_postfix({
@@ -192,10 +188,6 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
                     'Batch': f"{batch_idx+1}/{len(data_loader)}"
                 })
                 pbar.update(1)  # Increment by 1 for each image processed
-
-            # After processing all images in the batch, no need for extra updates
-            
-    # Progress bar auto-closes with the context manager
 
     # Output the delta_yaw errors
     delta_yaws = np.array(delta_yaws)
@@ -211,13 +203,23 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
     plt.ylabel('Frequency')
     plt.grid(axis='y', alpha=0.75)
     plt.savefig(os.path.join(results_dir, 'delta_yaws_hist.png'), dpi=300, bbox_inches='tight')
-
-    # Save results to a text file
-    np.savetxt(os.path.join(results_dir, 'delta_yaws.txt'), delta_yaws, header="Delta Yaws (degrees)")
-    with open(os.path.join(results_dir, 'delta_yaws.txt'), 'a') as f:
-        f.write(f"\n\nMean Delta Yaw Error: {np.mean(delta_yaws)}\n")
-        f.write(f"Standard Deviation of Delta Yaw Error: {np.std(delta_yaws)}\n")
-        f.write(f"Median Delta Yaw Error: {np.median(delta_yaws)}\n")
+    
+    # Save delta yaws to pickle file
+    with open(os.path.join(results_dir, 'delta_yaws.pkl'), 'wb') as f:
+        pickle.dump(delta_yaws, f)
+    
+    # Save statistics to well-formatted info.txt file
+    with open(os.path.join(results_dir, 'info.txt'), 'w') as f:
+        f.write("Delta Yaw Error Statistics\n")
+        f.write("=" * 30 + "\n\n")
+        f.write(f"Total Samples: {len(delta_yaws)}\n\n")
+        f.write("Error Metrics:\n")
+        f.write("-" * 15 + "\n")
+        f.write(f"Mean Delta Yaw Error:       {np.mean(delta_yaws):.4f}°\n")
+        f.write(f"Standard Deviation:         {np.std(delta_yaws):.4f}°\n")
+        f.write(f"Median Delta Yaw Error:     {np.median(delta_yaws):.4f}°\n")
+        f.write(f"Minimum Delta Yaw Error:    {np.min(delta_yaws):.4f}°\n")
+        f.write(f"Maximum Delta Yaw Error:    {np.max(delta_yaws):.4f}°\n")
 
 
 
@@ -253,24 +255,6 @@ if __name__ == '__main__':
         # dataset_path = r'D:\datasets\CVGlobal'
         dataset_path = r'D:\cross_view_localization_DSM\Data\CVGlobal'
         train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=0.02, split_ratio=1, groundtype='panos')
-
-
-    # elif dataset_name == "VIGOR":
-    #     data_loader = DataLoader_VIGOR(mode='train')
-    #     train_filenames = data_loader.train_list
-    #     train_labels = data_loader.train_label
-    #     print("Training Filename 0:")
-    #     print(train_filenames[0])
-    #     print(train_labels[0])
-        
-
-        # # Access and print testing filenames
-        # test_filenames = data_loader.test_list
-        # print("\nTesting Filenames:")
-        # for filename in test_filenames:
-        #     print(filename)
-
-
 
     # Settings
     image_size = 224
