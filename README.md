@@ -1,4 +1,4 @@
-# ZeSCO: Zero-Shot Cross-View Orientation Estimation
+# ZeSCO: Zero-Shot Cross-View Orientation
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
@@ -73,8 +73,6 @@ python apply_method.py \
 
 ### Dataset Preparation
 
-#### CVUSA (Cross-View USA)
-
 ```
 CVUSA/
 ├── streetview/
@@ -112,10 +110,13 @@ CVUSA/
 $$w_{\text{fore}}(d) = d$$
 
 **Middleground Weights**:
-$$w_{\text{mid}}(d) = \begin{cases} 
-\frac{1}{\tau} d & \text{if } d \leq 0.5 \\
+
+$$
+w_{\text{mid}}(d) = \begin{cases} 
+\frac{1}{\tau} d & \text{if } d \leq 0.5 \\\\
 \frac{1-d}{d} & \text{otherwise}
-\end{cases}$$
+\end{cases}
+$$
 
 **Background Weights**:
 $$w_{\text{back}}(d) = 1 - d$$
