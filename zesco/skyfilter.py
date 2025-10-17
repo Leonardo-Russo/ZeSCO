@@ -117,7 +117,7 @@ class SkyFilter(nn.Module):
         self.width, self.height = width, height
         self.grid_size = grid_size
 
-        print(' ?> Using provider %s' % provider)
+        print('Skyfilter using provider: %s' % provider)
         self.load_model()
 
     def forward(self, ground_image_vis, debug=False):
@@ -218,7 +218,6 @@ class SkyFilter(nn.Module):
                     else:
                         self.model = find_model_file()
 
-        print(' -> Loading the model')
         onnx_model = onnx.load(self.model)
 
         # Check the model
@@ -227,8 +226,6 @@ class SkyFilter(nn.Module):
         except onnx.checker.ValidationError as e:
             print(' !> The model is invalid: %s' % e)
             raise
-        else:
-            print(' ?> The model is valid!')
 
         self.session = ort.InferenceSession(self.model, providers=[provider])     
 

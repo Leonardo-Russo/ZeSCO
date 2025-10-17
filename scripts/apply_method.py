@@ -24,7 +24,7 @@ warnings.filterwarnings("ignore")
 def test(model, processors, loss, data_loader, grid_size, device, savepath='untitled', threshold=0.4, debug=False, save_mode='combined'):
 
     # Create results directory and retrieve batch size
-    results_dir = os.path.join('results', savepath)
+    results_dir = os.path.join(r'..\results', savepath)
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
 
@@ -294,6 +294,5 @@ if __name__ == '__main__':
          grid_size,
          device,
          savepath=args.name,
-         create_figs=args.create_figs.lower() == 'true',
          debug=args.debug.lower() == 'true',
          save_mode=args.save_mode)
