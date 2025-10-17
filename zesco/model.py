@@ -35,50 +35,8 @@ class CrossviewModel(nn.Module):
 
         self.backbone = backbone
         self.pretrained = frozen
-        self.device = device if device else "cuda" if torch.cuda.is_available() else "cpu"
 
-        if backbone == 'dinov2':
-
-            self.original_model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14")
-            self.patch_size = self.original_model.patch_size
-            self.interpolate_offset = self.original_model.interpolate_offset
-            self.interpolate_antialias = self.original_model.interpolate_antialias
-            self.original_model.to(self.device)
-            self.original_model.eval()
-
-            self.patch_embed = self.original_model.patch_embed
-            self.blocks = self.original_model.blocks
-            self.norm = self.original_model.norm
-            self.head = self.original_model.head
-            self.cls_token = self.original_model.cls_token.clone()
-            self.pos_embed = self.original_model.pos_embed.clone()
-
-            if frozen:
-                for param in self.patch_embed.parameters():
-                    param.requires_grad = False
-                for param in self.blocks.parameters():
-                    param.requires_grad = False
-                for param in self.norm.parameters():
-                    param.requires_grad = False
-                for param in self.head.parameters():
-                    param.requires_grad = False
-
-        elif backbone == 'clip':
-
-            self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16").to(self.device)
-            self.patch_size = 16
-
-        elif backbone == "resnet50":
-
-            self.patch_size = 32  # ResNet50 does not use patch embeddings, but we can set a dummy value
-            self.model = models.resnet50(pretrained=frozen)
-            self.feature_extractor = nn.Sequential(*list(self.model.children())[:-2])  # remove fully connected (FC) layers and keep convolutional feature extractor
-
-            if frozen:
-                for param in self.feature_extractor.parameters():
-                    param.requires_grad = False
-
-        elif backbone == "dinov2T":
+        if backbone == "dinov2":
             
             self.model = AutoModel.from_pretrained('facebook/dinov2-base')
             self.patch_size = self.model.config.patch_size
@@ -98,6 +56,21 @@ class CrossviewModel(nn.Module):
 
             self.model = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-sat493m")
             self.patch_size = self.model.config.patch_size
+
+        elif backbone == 'clip':
+
+            self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16").to(self.device)
+            self.patch_size = 16
+
+        elif backbone == "resnet50":
+
+            self.patch_size = 32  # ResNet50 does not use patch embeddings, but we can set a dummy value
+            self.model = models.resnet50(pretrained=frozen)
+            self.feature_extractor = nn.Sequential(*list(self.model.children())[:-2])  # remove fully connected (FC) layers and keep convolutional feature extractor
+
+            if frozen:
+                for param in self.feature_extractor.parameters():
+                    param.requires_grad = False
 
         if frozen:
             for param in self.model.parameters():
@@ -160,35 +133,7 @@ class CrossviewModel(nn.Module):
 
         return ground_tokens, aerial_tokens
 
-    def _forward_dinov2(self, ground_image, aerial_image, debug):
-
-        ground_tokens = self.prepare_tokens(ground_image)
-        aerial_tokens = self.prepare_tokens(aerial_image)
-
-        for blk in self.blocks:
-            ground_tokens = blk(ground_tokens)
-            aerial_tokens = blk(aerial_tokens)
-
-        ground_tokens = self.norm(ground_tokens)
-        aerial_tokens = self.norm(aerial_tokens)
-
-        ground_cls = ground_tokens[:, :1, :]
-        ground_tokens = ground_tokens[:, 1:, :]
-        aerial_cls = aerial_tokens[:, :1, :]
-        aerial_tokens = aerial_tokens[:, 1:, :]
-
-        
-        if debug:
-            print("x1_img shape: ", ground_image.shape)
-            print("x2_img shape: ", aerial_image.shape)
-            print("x1_dino shape: ", ground_tokens.shape)
-            print("x2_dino shape: ", aerial_tokens.shape)
-            print("x1_cls shape: ", ground_cls.shape)
-            print("x2_cls shape: ", aerial_cls.shape)
-
-        return ground_tokens, aerial_tokens
-
-    def _forward_dinov2T(self, ground_input, aerial_input, debug=False):
+    def _forward_dinov2(self, ground_input, aerial_input, debug=False):
 
         ground_outputs = self.model(ground_input)
         aerial_outputs = self.model(aerial_input)

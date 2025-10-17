@@ -7,12 +7,11 @@ import argparse
 from tqdm import tqdm
 import pickle
 
-from dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images, get_transforms, denormalize
-from model import CrossviewModel, CosineSimilarityLoss, CosineSimilarityLossCustom, get_processors
-from utils import get_averaged_vertical_tokens, get_averaged_radial_tokens, find_alignment, _next_sample_id, _save_separate_figures
-
-from skyfilter import SkyFilter
-from depther import DepthAnything
+from zesco.dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images, get_transforms, denormalize
+from zesco.model import CrossviewModel, CosineSimilarityLoss, CosineSimilarityLossCustom, get_processors
+from zesco.utils import get_averaged_vertical_tokens, get_averaged_radial_tokens, find_alignment, _next_sample_id, _save_separate_figures
+from zesco.skyfilter import SkyFilter
+from zesco.depther import DepthAnything
 
 import warnings
 from transformers import logging
