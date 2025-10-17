@@ -30,7 +30,7 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
 
     # Initialize the Sky Filter and DepthAnything
     sky_filter = SkyFilter(grid_size=grid_size)
-    depth_anything = DepthAnything(grid_size=grid_size).to(device)
+    depth_anything = DepthAnything(grid_size=grid_size)
 
     # Core Processing Loop
     delta_yaws = []
@@ -38,23 +38,20 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
         for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in enumerate(data_loader):
             ground_images = ground_images.to(device)
             aerial_images = aerial_images.to(device)
-            batch_size = ground_images.size(0)
-            fov_x, fov_y = fovs
+            batch_size = ground_images.size(0)  # Get actual batch size (might be smaller for last batch)
 
-            # Forward pass through the backbone model
+            if debug:
+                print(f"Batch {batch_idx}: fovs", fovs)
+                print(f"Batch {batch_idx}: yaws", yaws)
+                print(f"Batch {batch_idx}: pitchs", pitchs)
+
+            # Forward pass through the model
             with torch.no_grad():
                 ground_tokens, aerial_tokens = model(ground_images, aerial_images, debug=False)
+            fov_x, fov_y = fovs
 
-            # Apply depth estimation
-            with torch.no_grad():
-                depth_maps, depth_maps_grid = depth_anything(ground_images.permute(0, 2, 3, 1), debug=debug)    # (B, 1, H, W), (B, 1, grid_h, grid_w)
-
-            # Apply sky filter
-            # NOTE: it's working but I need to check that it is working correctly
-            with torch.no_grad():
-                ground_image_no_sky, sky_mask, sky_grid = sky_filter(ground_images.permute(0, 2, 3, 1), debug=debug)
-
-
+            # Process each image in the batch individually
+            # Note: batch_size is already defined above
             for i in range(batch_size):  # Iterate over batch size
                 ground_image = ground_images[i:i+1]
                 aerial_image = aerial_images[i:i+1]
@@ -92,6 +89,11 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
                 ground_image_vis = ground_image_vis.astype(np.uint8)
                 aerial_image_vis = aerial_image_vis.astype(np.uint8)
 
+                # Apply sky filter
+                ground_image_no_sky, sky_mask, sky_grid = sky_filter(ground_image_vis, debug=debug)
+
+                # Apply depth estimation
+                depth_map, depth_map_grid = depth_anything(ground_image_no_sky, debug=debug)
 
                 fov_x_i = fov_x[i].item()                          # horizontal fov in degrees
                 angle_step = fov_x_i / grid_dim
