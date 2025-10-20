@@ -128,48 +128,48 @@ class SkyFilter(nn.Module):
         Applies a sky filter to remove the sky from a batch of images.
         
         Parameters:
-        - ground_images: Batch of images (B, H, W, C) or list of images.
+        - ground_images: Tensor batch of images (B, H, W, C) or list of images.
         - debug: Optional parameter to enable visualization of intermediate steps. Default is False.
         
         Returns:
-        - ground_images_no_sky: The images with the sky removed. Shape: (B, H, W, C)
+        - ground_images_no_sky: The images with the sky removed in range [0, 1]. Shape: (B, H, W, C)
         - sky_masks: The binary masks indicating the sky regions. Shape: (B, H, W)
         - grid_masks: The binary masks indicating the ground regions in the image grid. Shape: (B, grid_h, grid_w)
         """
-        # Convert to torch tensor if numpy array
-        if isinstance(ground_images, np.ndarray):
-            ground_images_tensor = torch.from_numpy(ground_images).float().to(self.device)
-        elif isinstance(ground_images, list):
-            ground_images_tensor = torch.stack([torch.from_numpy(img).float() for img in ground_images]).to(self.device)
-        else:
-            ground_images_tensor = ground_images.to(self.device)
 
         # Get batch size and dimensions
-        batch_size, height, width = ground_images_tensor.shape[:3]
+        batch_size, height, width = ground_images.shape[:3]
 
         # Get sky masks for the batch
-        sky_masks = self.get_mask_batch(ground_images_tensor)  # (B, H, W)
+        sky_masks = self.get_mask_batch(ground_images).unsqueeze(-1)  # (B, H, W, 1)
 
         # Create inverted masks for removing sky
-        inv_masks = (sky_masks == 0).float()  # (B, H, W)
+        inv_masks = (sky_masks == 0).float()  # (B, H, W, 1)
 
         # Apply masks to remove sky
-        ground_images_no_sky = ground_images_tensor * inv_masks.unsqueeze(-1)  # (B, H, W, C)
+        ground_images_no_sky = ground_images.permute(0, 3, 1, 2) * inv_masks.permute(0, 3, 1, 2)  # (B, C, H, W)
 
         # Use adaptive average pooling to create grid masks
-        # First, convert sky_masks to float and add channel dimension
-        sky_masks_float = sky_masks.float().unsqueeze(1) / 255.0  # (B, 1, H, W), normalized to [0, 1]
+        sky_masks_float = sky_masks.permute(0, 3, 1, 2) / 255.0     # (B, 1, H, W) normalized to [0, 1]
+
+        # # Plot one of the sky masks and one of the sky grids for debugging
+        # fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+        # ax[0].imshow(sky_masks[0, 0].cpu().numpy(), cmap='gray')
+        # ax[0].set_title('Sky Mask Example')
+        # ax[0].axis('off')
+        # ax[1].imshow(ground_images_no_sky[0].cpu().numpy())
+        # ax[1].set_title('Ground Image Without Sky')
+        # ax[1].axis('off')
+        # plt.show()
         
         # Downsample using adaptive pooling
         grid_masks_pooled = F.adaptive_avg_pool2d(sky_masks_float, output_size=self.grid_size)  # (B, 1, grid_h, grid_w)
-        
-        # Apply threshold: if more than 0.5 (127/255) of the cell is sky, mark as sky (0), else ground (1)
-        grid_masks = (grid_masks_pooled.squeeze(1) > 0.5).float()  # (B, grid_h, grid_w)
+        grid_masks = (grid_masks_pooled > 0.5).float()      # (B, 1, grid_h, grid_w)    apply threshold: if more than 0.5 (127/255) of the cell is sky, mark as sky (0), else ground (1)
 
         # Visualize if debug mode
         if debug:
             # Convert to numpy for visualization (first image only)
-            ground_images_np = ground_images_tensor[0].cpu().numpy().astype(np.uint8)
+            ground_images_np = ground_images[0].cpu().numpy().astype(np.uint8)
             sky_mask_np = sky_masks[0].cpu().numpy().astype(np.uint8)
             ground_image_no_sky_np = ground_images_no_sky[0].cpu().numpy().astype(np.uint8)
             grid_mask_np = grid_masks[0].cpu().numpy()
@@ -189,7 +189,7 @@ class SkyFilter(nn.Module):
             ax4.axis('off')
             plt.show()
 
-        return ground_images_no_sky, sky_masks, grid_masks
+        return ground_images_no_sky, sky_masks_float, grid_masks
 
     
     def load_model(self):
@@ -286,7 +286,7 @@ class SkyFilter(nn.Module):
         Process a batch of images to get sky masks using PyTorch.
         
         Parameters:
-        - img_batch: Batch of images as torch tensor (B, H, W, C) in range [0, 255]
+        - img_batch: Batch of images as torch tensor (B, H, W, C) in range [0, 1]
         
         Returns:
         - masks: Batch of binary masks (B, H, W) as torch tensor
@@ -307,11 +307,8 @@ class SkyFilter(nn.Module):
                 mode='area'
             ).permute(0, 2, 3, 1)  # Back to (1, H, W, C)
             
-            # Normalize to [0, 1]
-            img_normalized = img_resized / 255.0
-            
             # Prepare input for ONNX model (1, C, H, W)
-            input_single = img_normalized.permute(0, 3, 1, 2).cpu().numpy().astype(np.float32)
+            input_single = img_resized.permute(0, 3, 1, 2).cpu().numpy().astype(np.float32)
             
             # Run the model
             ort_inputs = {self.session.get_inputs()[0].name: input_single}

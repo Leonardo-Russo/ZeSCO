@@ -18,7 +18,7 @@ import random
 from transformers import ViTImageProcessor, AutoModel
 
 
-def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, groundtype='panos', zoom_level=19):
+def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, groundtype='panos', zoom_level=19, shortcut=False):
     """
     Function to sample a percentage of the dataset and split it into training and validation sets.
     
@@ -39,6 +39,9 @@ def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, gr
         raise ValueError("Invalid groundtype. Choose either 'panos' or 'cutouts'.")
     satellite_dir = os.path.join(dataset_path, 'bingmap')
 
+    if shortcut:
+        num_to_select = int(10000 * sample_percentage)
+
     paired_filenames = []
     for root, _, files in os.walk(ground_dir):
         for file in files:
@@ -51,7 +54,10 @@ def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, gr
                 sat_path = os.path.join(satellite_dir, f'{zoom_level}/{image_id}.jpg')
                 if os.path.exists(sat_path):
                     paired_filenames.append((ground_path, sat_path))
-    
+            if shortcut:
+                if len(paired_filenames)*sample_percentage >= num_to_select:
+                    break
+
     num_to_select = int(len(paired_filenames) * sample_percentage)
     selected_filenames = random.sample(paired_filenames, num_to_select)
     

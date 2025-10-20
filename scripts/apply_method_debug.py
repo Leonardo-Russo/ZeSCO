@@ -7,21 +7,21 @@ import argparse
 from tqdm import tqdm
 import pickle
 
-from zesco.dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images, get_transforms, denormalize
-from zesco.model import CrossviewModel, CosineSimilarityLoss, CosineSimilarityLossCustom, get_processors
+from zesco.dataset import PairedImagesDataset, sample_cvusa_images, get_transforms, denormalize
+from zesco.model import CosineSimilarityLoss, CosineSimilarityLossCustom, get_processors
 from zesco.utils import get_averaged_vertical_tokens, get_averaged_radial_tokens, find_alignment, _next_sample_id, _save_separate_figures
 from zesco.skyfilter import SkyFilter
 from zesco.depther import DepthAnything
 
-import warnings
-from transformers import logging
-logging.set_verbosity_error()
-warnings.filterwarnings("ignore")
+# import warnings
+# from transformers import logging
+# logging.set_verbosity_error()
+# warnings.filterwarnings("ignore")
 
 # matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
 
 
-def test(model, processors, loss, data_loader, grid_size, device, savepath='untitled', threshold=0.4, debug=False, save_mode='combined'):
+def test(processors, loss, data_loader, grid_size, device, savepath='untitled', threshold=0.4, debug=False, save_mode='combined'):
 
     # Create results directory and retrieve batch size
     results_dir = os.path.join(r'..\results', savepath)
@@ -38,28 +38,52 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
         for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in enumerate(data_loader):
             ground_images = ground_images.to(device)
             aerial_images = aerial_images.to(device)
-            batch_size = ground_images.size(0)
             fov_x, fov_y = fovs
 
-            # Forward pass through the backbone model
-            with torch.no_grad():
-                ground_tokens, aerial_tokens = model(ground_images, aerial_images, debug=False)
-
-            # Apply depth estimation
-            with torch.no_grad():
-                depth_maps, depth_maps_grid = depth_anything(ground_images.permute(0, 2, 3, 1), debug=debug)    # (B, 1, H, W), (B, 1, grid_h, grid_w)
-
-            # Plot one of the depth maps for debugging
-            plt.figure()
-            plt.imshow(depth_maps[0, 0].cpu().numpy(), cmap='plasma')
-            plt.colorbar()
-            plt.title('Depth Map Example')
-            plt.show()
+            # Denormalize images
+            ground_images_denorm = denormalize(ground_images, processors[0])
+            aerial_images_denorm = denormalize(aerial_images, processors[1])
 
             # Apply sky filter
             # NOTE: it's working but I need to check that it is working correctly
             with torch.no_grad():
-                ground_image_no_sky, sky_mask, sky_grid = sky_filter(ground_images.permute(0, 2, 3, 1), debug=debug)
+                ground_images_no_sky, sky_masks, sky_grids = sky_filter(ground_images_denorm.permute(0, 2, 3, 1), debug=debug)
+
+            if debug:
+                # Visualize the original image, mask, and the sky-removed image
+                fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(18, 6))
+                ax1.imshow(ground_images_denorm[0].permute(1, 2, 0).cpu().numpy())
+                ax1.set_title("Ground Image", fontsize=12, fontweight='bold')
+                ax1.axis('off')
+                ax2.imshow(sky_masks[0, 0].cpu().numpy(), cmap='gray')
+                ax2.set_title("Sky Mask", fontsize=12, fontweight='bold')
+                ax2.axis('off')
+                ax3.imshow(ground_images_no_sky[0].permute(1, 2, 0).cpu().numpy())
+                ax3.set_title("Ground Image without Sky", fontsize=12, fontweight='bold')
+                ax3.axis('off')
+                ax4.imshow(sky_grids[0, 0].cpu().numpy(), cmap='gray')
+                ax4.set_title("Sky Grid Mask", fontsize=12, fontweight='bold')
+                ax4.axis('off')
+                plt.show()
+
+            # Apply depth estimation
+            with torch.no_grad():
+                depth_maps, depth_maps_grid = depth_anything(ground_images_no_sky.permute(0, 2, 3, 1), debug=debug)    # (B, 1, H, W), (B, 1, grid_h, grid_w)
+                # depth_maps, depth_maps_grid = depth_anything(ground_images_denorm.permute(0, 2, 3, 1), debug=debug)    # (B, 1, H, W), (B, 1, grid_h, grid_w)
+
+            # Plot one of the depth maps and one of the depth maps grid for debugging
+            if debug:
+                fig, ax = plt.subplots(1, 3, figsize=(10, 5))
+                ax[0].imshow(ground_images_no_sky[0].permute(1, 2, 0).cpu().numpy())
+                ax[0].set_title('Ground Image without Sky')
+                ax[0].axis('off')
+                ax[1].imshow(depth_maps[0, 0].cpu().numpy(), cmap='plasma')
+                ax[1].set_title('Depth Map')
+                ax[1].axis('off')
+                ax[2].imshow(depth_maps_grid[0, 0].cpu().numpy(), cmap='plasma')
+                ax[2].set_title('Depth Map Grid')
+                ax[2].axis('off')
+                plt.show()
 
 
             for i in range(batch_size):  # Iterate over batch size
@@ -104,8 +128,8 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
                 angle_step = fov_x_i / grid_dim
 
                 # Compute Averaged Tokens using the weight vector, excluding sky tokens
-                fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, ground_features, grid_dim, sky_grid, depth_map_grid, threshold=threshold)
-                fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, aerial_features, grid_dim, sky_grid, depth_map_grid)
+                fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, ground_features, grid_dim, sky_grids, depth_map_grid, threshold=threshold)
+                fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, aerial_features, grid_dim, sky_grids, depth_map_grid)
                 
                 if debug:
                     print("averaged vertical tokens: ", fore_vert_avg_tokens.shape)
@@ -233,32 +257,17 @@ if __name__ == '__main__':
     parser.add_argument('--backbone', '-b', type=str, default='dinov3', help='Model to use')
     parser.add_argument('--loss', '-l', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--dataset', '-d', type=str, default='cvglobal', help='Dataset to use')
-    parser.add_argument('--debug', '-db', type=str, default='False', help='Debug mode')
     parser.add_argument('--create_figs', '-s', type=str, default='true', help='Create figures')
     parser.add_argument('--save_mode', '-m', type=str, default='separate', choices=['combined', 'separate', 'both'],
                         help='Save only the combined 2x2 figure, only the 4 separate figures, or both')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode with visualizations')
     args = parser.parse_args()
     
     # Get Dataset Images
     dataset_name = args.dataset
-    if dataset_name == "cvusa":
-        # dataset_path = '/home/lrusso/cvusa/CVPR_subset'
-        dataset_path = r'D:\CVUSA\CVPR_subset'
-        train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=1.0, split_ratio=0.8, groundtype='panos')
-    if dataset_name == "cvusa_subset":
-        # dataset_path = '/home/lrusso/cvusa/CVPR_subset'
-        dataset_path = r'D:\CVUSA\CVPR_subset'
-        train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=0.005, split_ratio=0.8, groundtype='panos')
-    elif dataset_name == "CITIES":
-        dataset_path = '/home/lrusso/CV-Cities'
-        train_filenames, _ = sample_cities_images(dataset_path, sample_percentage=0.005, split_ratio=0.1)
-    elif dataset_name == "GLOBAL":
-        dataset_path = '/home/lrusso/CV-GLOBAL'
-        train_filenames, _ = sample_cities_images(dataset_path, sample_percentage=0.005, split_ratio=0.1)
-    elif dataset_name.lower() == "cvglobal":
-        # dataset_path = r'D:\datasets\CVGlobal'
+    if dataset_name.lower() == "cvglobal":
         dataset_path = r'D:\cross_view_localization_DSM\Data\CVGlobal'
-        train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=0.02, split_ratio=1, groundtype='panos')
+        train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=0.002, split_ratio=1, groundtype='panos', shortcut=True)
 
     # Settings
     image_size = 224
@@ -286,18 +295,13 @@ if __name__ == '__main__':
     else:
         raise ValueError('The loss provided is not implemented.')
 
-    # Load the Model
-    model = CrossviewModel(backbone=args.backbone, frozen=True).to(device)
-    grid_size = (image_size // model.patch_size, image_size // model.patch_size)
-    print(f"Model patch size: {model.patch_size}, grid size: {grid_size}")
-    model.show()
+    grid_size = (14, 14)
 
-    test(model,
-         processors,
+    test(processors,
          loss,
          data_loader,
          grid_size,
          device,
          savepath=args.name,
-         debug=args.debug.lower() == 'true',
+         debug=args.debug,
          save_mode=args.save_mode)

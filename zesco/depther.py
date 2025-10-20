@@ -28,7 +28,7 @@ class DepthAnything(nn.Module):
         - depth_map_grids: The downsampled depth map grids. Shape: (B, grid_h, grid_w)
         """
         # Prepare images for the model
-        inputs = self.image_processor(images=images, return_tensors="pt")
+        inputs = self.image_processor(images=images.permute(0, 3, 1, 2), return_tensors="pt")
 
         # Get the predicted depth
         with torch.no_grad():
@@ -56,27 +56,18 @@ class DepthAnything(nn.Module):
         depth_map_grids = torch.nn.functional.adaptive_avg_pool2d(depth_maps, output_size=self.grid_size)
         depth_map_grids = torch.clamp(depth_map_grids, 0.0, 1.0)    # ensure values are in [0, 1] range
 
-        # Visualize the depth map and downsampled depth map grid if in debug mode (only first image)
+        # Plot one of the depth maps and one of the depth maps grid for debugging
         if debug:
-            depth_maps_np = depth_maps.cpu().numpy()
-            depth_map_grids_np = depth_map_grids.cpu().numpy()
-            images_np = images if isinstance(images, np.ndarray) else np.array(images)
-            
-            plt.figure(figsize=(18, 8))
-            plt.subplot(131)
-            plt.imshow(images_np[0])
-            plt.title('Original Image (First in Batch)')
-            plt.axis('off')
-            plt.subplot(132)
-            plt.imshow(depth_maps_np[0], cmap='plasma')
-            plt.colorbar()
-            plt.title('Depth Map (First in Batch)')
-            plt.axis('off')
-            plt.subplot(133)
-            plt.imshow(depth_map_grids_np[0], cmap='plasma')
-            plt.colorbar()
-            plt.title(f'Downsampled Depth Map ({self.grid_size[0]}x{self.grid_size[1]} Grid)')
-            plt.axis('off')
+            fig, ax = plt.subplots(1, 3, figsize=(10, 5))
+            ax[0].imshow(images[0].cpu().numpy())
+            ax[0].set_title('Ground Image')
+            ax[0].axis('off')
+            ax[1].imshow(depth_maps[0, 0].cpu().numpy(), cmap='plasma')
+            ax[1].set_title('Depth Map')
+            ax[1].axis('off')
+            ax[2].imshow(depth_map_grids[0, 0].cpu().numpy(), cmap='plasma')
+            ax[2].set_title('Depth Map Grid')
+            ax[2].axis('off')
             plt.show()
 
         return depth_maps, depth_map_grids
