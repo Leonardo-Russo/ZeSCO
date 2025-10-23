@@ -222,7 +222,7 @@ def validate(model, processors, data_loader, config):
     plt.hist(delta_yaws, bins=50, edgecolor='black', alpha=0.7)
     plt.xlabel('Absolute Orientation Error (degrees)', fontsize=12)
     plt.ylabel('Frequency', fontsize=12)
-    plt.title(f'Orientation Error Distribution\n' +
+    plt.title(f'Orientation Error Distribution - {config['dataset']}\n' +
              f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, Std: {error_std:.2f}°',
              fontsize=14)
     plt.grid(True, alpha=0.3)
