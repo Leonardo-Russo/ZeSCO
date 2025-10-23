@@ -13,22 +13,28 @@ class DepthAnything(nn.Module):
         self.model = AutoModelForDepthEstimation.from_pretrained("LiheYoung/depth-anything-small-hf")
         self.grid_size = grid_size
 
-    def forward(self, images, debug=False):
+    def forward(self, image, debug=False):
         """
-        Applies depth estimation to a batch of images, and returns the depth maps along with
-        downsampled versions of the depth maps on a grid where each grid cell
+        Applies depth estimation to the image, and returns the depth map along with
+        a downsampled version of the depth map on a 16x16 grid where each grid cell
         contains the average depth value of the pixels in that cell.
         
         Parameters:
-        - images: Batch of images (B, H, W, C) or list of images.
+        - model: The depth estimation model.
+        - image_processor: The processor for the depth estimation model.
+        - image: The image to be processed for depth estimation.
+        - grid_size: The size of the token grid (default is 16).
         - debug: Enable visualization of intermediate steps (default is False).
 
         Returns:
-        - depth_maps: The estimated depth maps. Shape: (B, H, W)
-        - depth_map_grids: The downsampled depth map grids. Shape: (B, grid_h, grid_w)
+        - depth_map: The estimated depth map for the image.
+        - depth_map_grid: The downsampled 16x16 depth map, containing average depth values.
         """
-        # Prepare images for the model
-        inputs = self.image_processor(images=images.permute(0, 3, 1, 2), return_tensors="pt")
+        # Prepare image for the model
+        inputs = self.image_processor(images=image, return_tensors="pt")
+
+        # Dimensions of the image
+        height, width = image.shape[:2]
 
         # Get the predicted depth
         with torch.no_grad():
@@ -36,40 +42,57 @@ class DepthAnything(nn.Module):
             predicted_depth = outputs.predicted_depth
 
         # Interpolate to the original image size
-        # Note: bicubic interpolation may have slight non-determinism on GPU
-        # For full reproducibility, ensure torch.backends.cudnn.deterministic = True
         prediction = torch.nn.functional.interpolate(
             predicted_depth.unsqueeze(1),
-            size=images.shape[1:3] if isinstance(images, np.ndarray) else images[0].shape[:2],
+            size=image.shape[:2][::-1],  # [width, height]
             mode="bicubic",
             align_corners=False,
         )
 
-        # Extract non-normalized depth maps
-        depth_maps = prediction  # (B, 1, H, W)
+        # Convert the tensor to a NumPy array and remove extra dimensions
+        depth_map = prediction.squeeze().cpu().numpy()
 
-        # Normalize each depth map to the range [0, 1]
-        depth_min = depth_maps.view(depth_maps.shape[0], -1).min(dim=1, keepdim=True)[0].unsqueeze(-1)
-        depth_max = depth_maps.view(depth_maps.shape[0], -1).max(dim=1, keepdim=True)[0].unsqueeze(-1)
-        depth_maps = (depth_maps.squeeze(1) - depth_min) / (depth_max - depth_min)
-        depth_maps = torch.clamp(depth_maps, 0.0, 1.0).unsqueeze(1)
+        # Normalize the depth map to the range [0, 1]
+        depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
+        
+        # Ensure values are exactly within [0, 1] range
+        depth_map = np.clip(depth_map, 0.0, 1.0)
 
-        # Use adaptive average pooling to create the downsampled depth map grids
-        depth_map_grids = torch.nn.functional.adaptive_avg_pool2d(depth_maps, output_size=self.grid_size)
-        depth_map_grids = torch.clamp(depth_map_grids, 0.0, 1.0)    # ensure values are in [0, 1] range
+        # Calculate the size of each grid cell
+        cell_height = height // self.grid_size[0]
+        cell_width = width // self.grid_size[1]
 
-        # Plot one of the depth maps and one of the depth maps grid for debugging
+        # Create the downsampled depth map grid
+        depth_map_grid = np.zeros((self.grid_size[0], self.grid_size[1]), dtype=np.float32)
+        for i in range(self.grid_size[0]):
+            for j in range(self.grid_size[1]):
+                start_x = j * cell_width
+                start_y = i * cell_height
+                end_x = (j + 1) * cell_width if j < self.grid_size[1] - 1 else width
+                end_y = (i + 1) * cell_height if i < self.grid_size[0] - 1 else height
+
+                # Calculate the average depth value in the cell
+                cell_depth = depth_map[start_y:end_y, start_x:end_x]
+                # Ensure the mean value is also properly clipped
+                depth_map_grid[i, j] = np.clip(np.mean(cell_depth), 0.0, 1.0)
+
+        # Visualize the depth map and downsampled depth map grid if in debug mode
         if debug:
-            fig, ax = plt.subplots(1, 3, figsize=(10, 5))
-            ax[0].imshow(images[0].cpu().numpy())
-            ax[0].set_title('Ground Image')
-            ax[0].axis('off')
-            ax[1].imshow(depth_maps[0, 0].cpu().numpy(), cmap='plasma')
-            ax[1].set_title('Depth Map')
-            ax[1].axis('off')
-            ax[2].imshow(depth_map_grids[0, 0].cpu().numpy(), cmap='plasma')
-            ax[2].set_title('Depth Map Grid')
-            ax[2].axis('off')
+            plt.figure(figsize=(18, 8))
+            plt.subplot(131)
+            plt.imshow(image)
+            plt.title('Original Image')
+            plt.axis('off')
+            plt.subplot(132)
+            plt.imshow(depth_map, cmap='plasma')
+            plt.colorbar()
+            plt.title('Depth Map')
+            plt.axis('off')
+            plt.subplot(133)
+            plt.imshow(depth_map_grid, cmap='plasma')
+            plt.colorbar()
+            plt.title('Downsampled Depth Map (16x16 Grid)')
+            plt.axis('off')
             plt.show()
 
-        return depth_maps, depth_map_grids
+        return depth_map, depth_map_grid

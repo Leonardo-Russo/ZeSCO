@@ -37,6 +37,8 @@ from .utils import (
     _save_separate_figures,
 )
 
+from .validate import validate
+
 __all__ = [
     # dataset.py
     "sample_cvusa_images",

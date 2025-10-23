@@ -1,227 +1,183 @@
 import numpy as np
-import torch
 import matplotlib.pyplot as plt
 import os
 import re
-        
-def find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, angle_step, debug=False):
+
+
+def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=16):
     """
-    Finds the alignment between averaged vertical tokens and averaged radial tokens using PyTorch.
-    
+    Retrieves direction tokens and their corresponding indices based on the given angle or vertical index.
     Parameters:
-    - fore/midd/back_vert_avg_tokens: torch.Tensors of shape (batch_size, grid_size, feature_dim) or (grid_size, feature_dim)
-    - fore/midd/back_rad_avg_tokens: torch.Tensors of shape (batch_size, num_angles, feature_dim) or (num_angles, feature_dim)
-    - grid_size (int): The size of the grid
-    - image_span (float or torch.Tensor): The span of the image (can be batched)
-    
+    - tokens (ndarray): The array of tokens.
+    - angle (float, optional): The angle in degrees for radial direction. Defaults to None.
+    - vertical_idx (int, optional): The vertical index for vertical line. Defaults to None.
+    - grid_size (int, optional): The size of the grid. Defaults to 16.
     Returns:
-    - best_orientations: torch.Tensor of shape (batch_size,) or float
-    - distances: list of lists or list
-    - min_distances: torch.Tensor of shape (batch_size,) or float
-    - confidences: torch.Tensor of shape (batch_size,) or float
+    - direction_tokens (ndarray): The array of direction tokens.
+    - indices (list): The list of indices corresponding to the direction tokens.
+    Notes:
+    - If angle is provided, the function retrieves direction tokens in a radial direction.
+    - If vertical_idx is provided, the function retrieves direction tokens in a vertical line.
+    - The function returns an empty array if neither angle nor vertical_idx is provided.
+    - The function stops retrieving tokens if they are out of bounds.
     """
-    device = fore_vert_avg_tokens.device
-    batch_size = fore_vert_avg_tokens.shape[0]
-
-    # Compute angles using linspace to avoid floating point precision issues
-    num_steps = int(round(360 / angle_step))
-    angles = torch.linspace(0, 360 - angle_step, num_steps, device=device)
-    num_angles = len(angles)
     
-    # Initialize batch outputs
-    best_orientations = torch.zeros(batch_size, device=device)
-    all_distances = []
-    min_distances = torch.zeros(batch_size, device=device)
-    confidences = torch.zeros(batch_size, device=device)
-    
-    # Process each sample in the batch
-    for b in range(batch_size):
-        distances = []
-        
-        for j, angle in enumerate(angles):
-            beta = angle.item()
-            cone_distance = 0
-            
-            for k in range(grid_size):
-                # Get radial tokens with modulo indexing
-                rad_idx = int(j + k - grid_size/2) % fore_rad_avg_tokens.shape[1]
-                vert_idx = (grid_size - 1) - k
-                
-                # Stack tokens for this batch element
-                vert_avg_tokens = torch.stack([
-                    fore_vert_avg_tokens[b, vert_idx],
-                    midd_vert_avg_tokens[b, vert_idx],
-                    back_vert_avg_tokens[b, vert_idx]
-                ])
-                
-                rad_avg_tokens = torch.stack([
-                    fore_rad_avg_tokens[b, rad_idx],
-                    midd_rad_avg_tokens[b, rad_idx],
-                    back_rad_avg_tokens[b, rad_idx]
-                ])
-                
-                # Calculate distance using loss function
-                dist = loss(vert_avg_tokens.cpu().numpy(), rad_avg_tokens.cpu().numpy())
-                cone_distance += dist
-            
-            cone_distance /= grid_size
-            distances.append(cone_distance)
-        
-        # Find minimum distance and best orientation for this sample
-        distances_tensor = torch.tensor(distances, device=device)
-        min_distances[b] = distances_tensor.min()
-        best_idx = int(distances_tensor.argmin())
-        best_orientations[b] = best_idx * angle_step
-        
-        # Compute confidence
-        mean_distance = float(distances_tensor.mean())
-        std_distance = float(distances_tensor.std())
-        confidences[b] = (mean_distance - min_distances[b].item()) / std_distance if std_distance > 0 else 0.0
-        
-        all_distances.append(distances)
-        
-        if debug:
-            print(f"Batch {b}: Min Distance: {min_distances[b]:.4f} \tBest Orientation: {best_orientations[b]:.1f}°")
-    
-    return best_orientations, all_distances, min_distances, confidences
-
-def get_averaged_vertical_tokens(angle_step, image_tokens_grid, grid_size, sky_grid, depth_map_grid, threshold=0.5):
-    """
-    Compute averaged vertical tokens using PyTorch for GPU acceleration (fully vectorized).
-    
-    Parameters:
-    - image_tokens: torch.Tensor of shape (batch_size, grid_size, grid_size, feature_dim)
-    - sky_grid: torch.Tensor of shape (batch_size, 1, grid_size, grid_size)
-    - depth_map_grid: torch.Tensor of shape (batch_size, 1, grid_size, grid_size)
-    
-    Returns:
-    - Three tensors of averaged tokens (foreground, middleground, background) each of shape (grid_size, feature_dim)
-    """
-
-    # Extract vertical slices: vertical_tokens[batch, i] will be the i-th column (as tokens_grid[batch, :, i, :])
-    vertical_tokens = image_tokens_grid.permute(0, 2, 1, 3)  # (batch_size, grid_size_cols, grid_size_rows, feature_dim)
-
-    # Get sky and depth masks for each vertical column
-    vertical_sky_grid = sky_grid.permute(0, 3, 2, 1)    # (batch_size, grid_size_cols, grid_size_rows, 1)
-    vertical_depth_map_grid = depth_map_grid.permute(0, 3, 2, 1)  # (batch_size, grid_size_cols, grid_size_rows, 1)
-
-    # Compute foreground weights
-    foreground_weights = vertical_depth_map_grid * vertical_sky_grid  # (batch_size, grid_size_cols, grid_size_rows, 1)
-    foreground_weights_sum = foreground_weights.sum(dim=2, keepdim=True).clamp(min=1e-8)  # (batch_size, grid_size_cols, 1, 1)
-    foreground_weights_norm = foreground_weights / foreground_weights_sum  # (batch_size, grid_size_cols, grid_size_rows, 1)
-    
-    # Compute middleground weights
-    middleground_weights = torch.where(
-        vertical_depth_map_grid <= 0.5,
-        (1 / threshold) * vertical_depth_map_grid,
-        (1 - vertical_depth_map_grid) / vertical_depth_map_grid
-    ) * vertical_sky_grid
-    middleground_weights_sum = middleground_weights.sum(dim=2, keepdim=True).clamp(min=1e-8)
-    middleground_weights_norm = middleground_weights / middleground_weights_sum
-    
-    # Compute background weights
-    background_weights = (1 - vertical_depth_map_grid) * vertical_sky_grid
-    background_weights_sum = background_weights.sum(dim=2, keepdim=True).clamp(min=1e-8)
-    background_weights_norm = background_weights / background_weights_sum
-    
-    # Compute weighted averages using einsum for efficiency
-    # Shape: (batch_size, grid_size_cols, grid_size_rows, 1) @ (batch_size, grid_size_cols, grid_size_rows, feature_dim)
-    #     -> (batch_size, grid_size_cols, feature_dim)
-    # Then sum over grid_size_rows dimension
-    foreground_avg = torch.einsum('bijk,bijk->bik', foreground_weights_norm, vertical_tokens).squeeze(0)
-    middleground_avg = torch.einsum('bijk,bijk->bik', middleground_weights_norm, vertical_tokens).squeeze(0)
-    background_avg = torch.einsum('bijk,bijk->bik', background_weights_norm, vertical_tokens).squeeze(0)
-    
-    return foreground_avg, middleground_avg, background_avg
-
-def get_averaged_radial_tokens(angle_step, image_tokens_grid, grid_size, sky_grid, depth_map_grid):
-    """
-    Compute averaged radial tokens using PyTorch for GPU acceleration.
-    
-    Parameters:
-    - image_tokens_grid: torch.Tensor of shape (batch_size, grid_size, grid_size, feature_dim)
-    - sky_grid: torch.Tensor of shape (batch_size, 1, grid_size, grid_size)
-    - depth_map_grid: torch.Tensor of shape (batch_size, 1, grid_size, grid_size)
-    - angle_step: float, the angle step in degrees
-    
-    Returns:
-    - Three tensors of averaged radial tokens (foreground, middleground, background)
-      each of shape (batch_size, num_angles, feature_dim)
-    """
-    device = image_tokens_grid.device
-    batch_size, _, _, feature_dim = image_tokens_grid.shape
-    
-    # Remove channel dimension from sky and depth grids
-    sky_grid = sky_grid.squeeze(1)  # (batch_size, grid_size, grid_size)
-    depth_map_grid = depth_map_grid.squeeze(1)  # (batch_size, grid_size, grid_size)
-
-    # Compute angles using linspace to avoid floating point precision issues
-    num_steps = int(round(360 / angle_step))
-    angles = torch.linspace(0, 360 - angle_step, num_steps, device=device)
-    num_angles = len(angles)
-    
-    # Pre-allocate output tensors for the batch
-    averaged_fore_radial_tokens = torch.zeros(batch_size, num_angles, feature_dim, device=device)
-    averaged_middle_radial_tokens = torch.zeros(batch_size, num_angles, feature_dim, device=device)
-    averaged_back_radial_tokens = torch.zeros(batch_size, num_angles, feature_dim, device=device)
-    
-    # Precompute radial sampling indices for all angles
-    center = (grid_size // 2, grid_size // 2)
-    angles_rad = torch.deg2rad(angles)
-    
-    # Process each batch element
-    for b in range(batch_size):
-        # Extract current batch's tensors
-        batch_tokens = image_tokens_grid[b]  # (grid_size, grid_size, feature_dim)
-        batch_sky = sky_grid[b]  # (grid_size, grid_size)
-        batch_depth = depth_map_grid.squeeze(0)  # (grid_size, grid_size)
-        
-        # For each angle, compute the radial path from center outward
-        for idx, angle_rad in enumerate(angles_rad):
-            # Generate radial coordinates
-            radii = torch.arange(grid_size, device=device, dtype=torch.float32)
-            x_coords = center[0] + radii * torch.cos(angle_rad)
-            y_coords = center[1] - radii * torch.sin(angle_rad)
-            
-            # Round to nearest integer and clamp to valid range
-            x_int = torch.clamp(torch.round(x_coords).long(), 0, grid_size - 1)
-            y_int = torch.clamp(torch.round(y_coords).long(), 0, grid_size - 1)
-
-            # Retrieve radial tokens, sky, and depth values
-            radial_tokens = batch_tokens[y_int, x_int]  # (valid_mask.shape[0], feature_dim)
-            radial_sky = batch_sky[y_int, x_int]  # (valid_mask.shape[0])
-            radial_depth = batch_depth[y_int, x_int]  # (valid_mask.shape[0])
-            
-            # Check which indices are within bounds (before rounding)
-            inbounds_mask = ((x_coords >= 0) & (x_coords < grid_size) & (y_coords >= 0) & (y_coords < grid_size)).float()
-
-            # Compute foreground weights
-            foreground_weights = radial_depth * radial_sky * inbounds_mask
-            num_tokens = int(foreground_weights.sum().item())
-            
-            # Middleground: prioritize middle distances, excluding sky
-            if num_tokens > 0:
-                t = torch.linspace(0, 1, grid_size, device=device)
-                # Compute the center as the midpoint of the inbounds_mask indices
-                mid_center = ((inbounds_mask.nonzero(as_tuple=True)[0].min() + inbounds_mask.nonzero(as_tuple=True)[0].max()) / 2) / grid_size
-                sigma = 0.25  # controls spread of the bell shape (tweakable)
-                middle_weights_pattern = torch.exp(-0.5 * ((t - mid_center) / sigma) ** 2)
-                middleground_weights = middle_weights_pattern * radial_sky * inbounds_mask
+    if angle is not None:  # Radial direction
+        center = (grid_size // 2, grid_size // 2)
+        direction_tokens = []
+        indices = []
+        for r in range(grid_size):
+            delta = 4
+            x = round(center[0] + r * np.cos(np.deg2rad(angle)))
+            y = round(center[1] - r * np.sin(np.deg2rad(angle)))
+            if 0 <= x < grid_size and 0 <= y < grid_size:
+                idx = y * grid_size + x
+                if tokens is None:
+                    direction_tokens.append(None)
+                    indices.append((y, x))
+                else:
+                    if idx < tokens.shape[0]:  # Ensure index is within bounds
+                        direction_tokens.append(tokens[idx])
+                        indices.append((y, x))
+                    else:
+                        break  # Stop if out of bounds
             else:
-                middleground_weights = torch.zeros_like(foreground_weights, device=device)
+                break  # Stop if out of bounds
+        return np.array(direction_tokens), indices
+    elif vertical_idx is not None:  # Vertical line
+        direction_tokens = tokens[vertical_idx::grid_size]  # extract each vertical line
+        return direction_tokens, [(i, vertical_idx) for i in range(grid_size)]
+        
+def find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, image_span, debug=False):
+    """
+    Finds the alignment between averaged vertical tokens and averaged radial tokens.
+    Parameters:
+    - averaged_vertical_tokens (ndarray): A numpy array containing the averaged vertical tokens.
+    - averaged_radial_tokens (ndarray): A numpy array containing the averaged radial tokens.
+    - grid_size (int): The size of the grid.
+    - image_span (float): The span of the image.
+    Returns:
+    - best_orientation (float): The best orientation in degrees.
+    - distances (list): A list of distances for each orienta'ption.
+    - min_distance (float): The minimum distance.
+    - confidence (float): The confidence score.
+    """
+
+    angle_step = image_span / grid_size
+    min_distance = float('inf')
+    distances = []
+
+    num_steps = int(round(360 / angle_step))
+    for j, beta in enumerate(np.linspace(0, 360 - angle_step, num_steps)):
+        cone_distance = 0
+        for i in range(grid_size):
+
+            fore_rad_avg_token = fore_rad_avg_tokens[int(j + i - grid_size/2) % fore_rad_avg_tokens.shape[0]]
+            midd_rad_avg_token = midd_rad_avg_tokens[int(j + i - grid_size/2) % midd_rad_avg_tokens.shape[0]]
+            back_rad_avg_token = back_rad_avg_tokens[int(j + i - grid_size/2) % back_rad_avg_tokens.shape[0]]
+            # print(f"beta: {beta:.2f} \tangle: {(j + i - grid_size/2)*angle_step} \tindex: {int(j + i - grid_size/2) % averaged_radial_tokens.shape[0]}")       
+
+            vert_avg_tokens = np.vstack((fore_vert_avg_tokens[(grid_size-1)-i], midd_vert_avg_tokens[(grid_size-1)-i], back_vert_avg_tokens[(grid_size-1)-i]))            
+            rad_avg_tokens = np.vstack((fore_rad_avg_token, midd_rad_avg_token, back_rad_avg_token))
+
+            cone_distance += loss(vert_avg_tokens, rad_avg_tokens)
+
+        cone_distance /= grid_size
+        if cone_distance < min_distance:
+            min_distance = cone_distance
+            best_orientation = beta
+            if debug:
+                print(f"Min Distance: {min_distance:.4f} \tBest Orientation: {best_orientation}°")
+        distances.append(cone_distance)
+
+    # Compute confidence
+    mean_distance = np.mean(distances)
+    std_distance = np.std(distances)
+    confidence = (mean_distance - min_distance) / std_distance  # Z-score
+
+    return best_orientation, distances, min_distance, confidence
+
+def get_averaged_vertical_tokens(angle_step, normalized_features1, grid_size, sky_grid, depth_map_grid, threshold=0.5):
+    
+    averaged_foreground_tokens = []
+    averaged_middleground_tokens = []
+    averaged_background_tokens = []
+    for i in range(grid_size):
+        vertical_tokens, indices = get_direction_tokens(normalized_features1, vertical_idx=i, grid_size=grid_size)
+        valid_tokens = []
+        foreground_weights = []
+        middleground_weights = []
+        background_weights = []
+        for token, (y, x) in zip(vertical_tokens, indices):
+            if sky_grid[y, x] == 1:  # 1 indicates ground, 0 indicates sky
+                valid_tokens.append(token)
+                foreground_weights.append(depth_map_grid[y, x])
+                if depth_map_grid[y, x] <= 0.5:
+                    middleground_weights.append((1 / threshold) * depth_map_grid[y, x])
+                else:
+                    middleground_weights.append((1 - depth_map_grid[y, x]) / depth_map_grid[y, x])
+                background_weights.append(1 - depth_map_grid[y, x])
+        
+        if valid_tokens:
+            valid_tokens = np.array(valid_tokens)
+            foreground_weights = np.array(foreground_weights)
+            middleground_weights = np.array(middleground_weights)
+            background_weights = np.array(background_weights)
+            foreground_weights /= np.sum(foreground_weights)  # Normalize the weights
+            middleground_weights /= np.sum(middleground_weights)
+            background_weights /= np.sum(background_weights)
             
-            # Background: prioritize far (low depth), excluding sky
-            background_weights = (1 - radial_depth) * radial_sky * inbounds_mask
-            
-            # Normalize weights
-            foreground_weights = foreground_weights / (foreground_weights.sum() + 1e-8)
-            middleground_weights = middleground_weights / (middleground_weights.sum() + 1e-8)
-            background_weights = background_weights / (background_weights.sum() + 1e-8)
-            
-            # Compute weighted averages
-            averaged_fore_radial_tokens[b, idx] = torch.mv(radial_tokens.t(), foreground_weights)
-            averaged_middle_radial_tokens[b, idx] = torch.mv(radial_tokens.t(), middleground_weights)
-            averaged_back_radial_tokens[b, idx] = torch.mv(radial_tokens.t(), background_weights)
+            # Calculate weighted average only on valid (non-sky) tokens
+            foreground_avg = np.average(valid_tokens, axis=0, weights=foreground_weights)
+            middleground_avg = np.average(valid_tokens, axis=0, weights=middleground_weights)
+            background_avg = np.average(valid_tokens, axis=0, weights=background_weights)
+            averaged_foreground_tokens.append(foreground_avg)
+            averaged_middleground_tokens.append(middleground_avg)
+            averaged_background_tokens.append(background_avg)
+        else:
+            # If no valid tokens are found (i.e., entire column is sky), append a zero vector or any placeholder
+            averaged_foreground_tokens.append(np.zeros_like(vertical_tokens[0]))
+            averaged_middleground_tokens.append(np.zeros_like(vertical_tokens[0]))
+            averaged_background_tokens.append(np.zeros_like(vertical_tokens[0]))
+    
+    averaged_foreground_tokens = np.array(averaged_foreground_tokens)
+    averaged_middleground_tokens = np.array(averaged_middleground_tokens)
+    averaged_background_tokens = np.array(averaged_background_tokens)
+
+    return averaged_foreground_tokens, averaged_middleground_tokens, averaged_background_tokens
+
+def get_averaged_radial_tokens(angle_step, normalized_features2, grid_size, sky_grid, depth_map_grid):
+    
+    averaged_fore_radial_tokens = []
+    averaged_middle_radial_tokens = []
+    averaged_back_radial_tokens = []
+    for beta in np.arange(0, 360, angle_step):
+        radial_tokens, _ = get_direction_tokens(normalized_features2, angle=beta, grid_size=grid_size)
+        increasing_weights = np.linspace(0, 1, len(radial_tokens))
+        decreasing_weights = np.linspace(1, 0, len(radial_tokens))
+
+        # Ensure middle_weights has the same length as radial_tokens
+        half_len = len(radial_tokens) // 2
+        middle_weights = np.hstack((np.linspace(0, 1, half_len, endpoint=False), np.linspace(1, 0, len(radial_tokens) - half_len)))
+
+        increasing_weights /= np.sum(increasing_weights)
+        decreasing_weights /= np.sum(decreasing_weights)
+        middle_weights /= np.sum(middle_weights)
+
+        # print("radial tokens:", radial_tokens.shape)
+        # print("middle weights:", middle_weights.shape)
+
+        foreground_avg = np.average(radial_tokens, axis=0, weights=decreasing_weights)
+        middleground_avg = np.average(radial_tokens, axis=0, weights=middle_weights)
+        background_avg = np.average(radial_tokens, axis=0, weights=increasing_weights)
+
+        averaged_fore_radial_tokens.append(foreground_avg)
+        averaged_middle_radial_tokens.append(middleground_avg)
+        averaged_back_radial_tokens.append(background_avg)
+
+    averaged_fore_radial_tokens = np.array(averaged_fore_radial_tokens)         # 64x768
+    averaged_middle_radial_tokens = np.array(averaged_middle_radial_tokens)
+    averaged_back_radial_tokens = np.array(averaged_back_radial_tokens)
 
     return averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens
 

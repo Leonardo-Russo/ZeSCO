@@ -34,7 +34,6 @@ def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, gr
     """
     
     if groundtype == 'panos':
-        print(groundtype)
         ground_dir = os.path.join(dataset_path, 'streetview', 'panos')
     else:   
         raise ValueError("Invalid groundtype. Choose either 'panos' or 'cutouts'.")
@@ -66,12 +65,6 @@ def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, gr
     split_point = int(split_ratio * len(selected_filenames))
     train_filenames = selected_filenames[:split_point]
     val_filenames = selected_filenames[split_point:]
-
-    # for debugging, load train_filenames and val_filenames from saved pkl files
-    with open('train_filenames.pkl', 'rb') as f:
-        train_filenames = pickle.load(f)
-    with open('val_filenames.pkl', 'rb') as f:
-        val_filenames = pickle.load(f)
 
     return train_filenames, val_filenames
 

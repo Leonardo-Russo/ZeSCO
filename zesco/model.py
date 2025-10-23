@@ -193,7 +193,7 @@ class CrossviewModel(nn.Module):
         aerial_patch_features_flat = aerial_last_hidden_states[:, 1 + self.model.config.num_register_tokens:, :]
         aerial_patch_features = aerial_patch_features_flat.unflatten(1, (aerial_num_patches_height, aerial_num_patches_width))
 
-        return ground_patch_features_flat, aerial_patch_features_flat, ground_patch_features, aerial_patch_features
+        return ground_patch_features_flat, aerial_patch_features_flat
 
     def _forward_resnet50(self, ground_image, aerial_image, debug):
 
