@@ -42,7 +42,7 @@ def find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_a
             beta = angle.item()
             cone_distance = 0
             
-            for k in range(grid_size + 1):
+            for k in range(grid_size):
                 # Get radial tokens with modulo indexing
                 rad_idx = int(j + k - grid_size/2) % fore_rad_avg_tokens.shape[1]
                 vert_idx = (grid_size - 1) - k
@@ -154,7 +154,7 @@ def get_averaged_radial_tokens(angle_step, image_tokens_grid, grid_size, sky_gri
     # Remove channel dimension from sky and depth grids
     sky_grid = sky_grid.squeeze(1)  # (batch_size, grid_size, grid_size)
     depth_map_grid = depth_map_grid.squeeze(1)  # (batch_size, grid_size, grid_size)
-    
+
     # Compute angles using linspace to avoid floating point precision issues
     num_steps = int(round(360 / angle_step))
     angles = torch.linspace(0, 360 - angle_step, num_steps, device=device)
@@ -174,7 +174,7 @@ def get_averaged_radial_tokens(angle_step, image_tokens_grid, grid_size, sky_gri
         # Extract current batch's tensors
         batch_tokens = image_tokens_grid[b]  # (grid_size, grid_size, feature_dim)
         batch_sky = sky_grid[b]  # (grid_size, grid_size)
-        batch_depth = depth_map_grid[b]  # (grid_size, grid_size)
+        batch_depth = depth_map_grid.squeeze(0)  # (grid_size, grid_size)
         
         # For each angle, compute the radial path from center outward
         for idx, angle_rad in enumerate(angles_rad):
@@ -186,39 +186,32 @@ def get_averaged_radial_tokens(angle_step, image_tokens_grid, grid_size, sky_gri
             # Round to nearest integer and clamp to valid range
             x_int = torch.clamp(torch.round(x_coords).long(), 0, grid_size - 1)
             y_int = torch.clamp(torch.round(y_coords).long(), 0, grid_size - 1)
+
+            # Retrieve radial tokens, sky, and depth values
+            radial_tokens = batch_tokens[y_int, x_int]  # (valid_mask.shape[0], feature_dim)
+            radial_sky = batch_sky[y_int, x_int]  # (valid_mask.shape[0])
+            radial_depth = batch_depth[y_int, x_int]  # (valid_mask.shape[0])
             
             # Check which indices are within bounds (before rounding)
-            valid_mask = (x_coords >= 0) & (x_coords < grid_size) & (y_coords >= 0) & (y_coords < grid_size)
-            
-            # Find first invalid index to determine actual ray length
-            if not valid_mask.all():
-                num_tokens = valid_mask.long().argmin().item()
-                if num_tokens == 0:  # All valid
-                    num_tokens = grid_size
-            else:
-                num_tokens = grid_size
+            inbounds_mask = ((x_coords >= 0) & (x_coords < grid_size) & (y_coords >= 0) & (y_coords < grid_size)).float()
 
-            
-            
-            # Extract tokens along this radial direction
-            radial_tokens = batch_tokens[y_int[:num_tokens], x_int[:num_tokens]]  # (num_tokens, feature_dim)
-            radial_sky = batch_sky[y_int[:num_tokens], x_int[:num_tokens]]  # (num_tokens,)
-            radial_depth = batch_depth[y_int[:num_tokens], x_int[:num_tokens]]  # (num_tokens,)
-            
-            # Compute weights for this radial direction
-            # Foreground: prioritize near (high depth), excluding sky
-            foreground_weights = radial_depth * radial_sky
+            # Compute foreground weights
+            foreground_weights = radial_depth * radial_sky * inbounds_mask
+            num_tokens = int(foreground_weights.sum().item())
             
             # Middleground: prioritize middle distances, excluding sky
-            half_len = num_tokens // 2
-            middle_weights_pattern = torch.cat([
-                torch.linspace(0, 1, half_len, device=device),
-                torch.linspace(1, 0, num_tokens - half_len, device=device)
-            ])
-            middleground_weights = middle_weights_pattern * radial_sky
+            if num_tokens > 0:
+                t = torch.linspace(0, 1, grid_size, device=device)
+                # Compute the center as the midpoint of the inbounds_mask indices
+                mid_center = ((inbounds_mask.nonzero(as_tuple=True)[0].min() + inbounds_mask.nonzero(as_tuple=True)[0].max()) / 2) / grid_size
+                sigma = 0.25  # controls spread of the bell shape (tweakable)
+                middle_weights_pattern = torch.exp(-0.5 * ((t - mid_center) / sigma) ** 2)
+                middleground_weights = middle_weights_pattern * radial_sky * inbounds_mask
+            else:
+                middleground_weights = torch.zeros_like(foreground_weights, device=device)
             
             # Background: prioritize far (low depth), excluding sky
-            background_weights = (1 - radial_depth) * radial_sky
+            background_weights = (1 - radial_depth) * radial_sky * inbounds_mask
             
             # Normalize weights
             foreground_weights = foreground_weights / (foreground_weights.sum() + 1e-8)
@@ -229,12 +222,8 @@ def get_averaged_radial_tokens(angle_step, image_tokens_grid, grid_size, sky_gri
             averaged_fore_radial_tokens[b, idx] = torch.mv(radial_tokens.t(), foreground_weights)
             averaged_middle_radial_tokens[b, idx] = torch.mv(radial_tokens.t(), middleground_weights)
             averaged_back_radial_tokens[b, idx] = torch.mv(radial_tokens.t(), background_weights)
-    
-    # Return squeezed results to match expected output shape (num_angles, feature_dim)
-    # This maintains compatibility with existing code that expects 2D output
-    return (averaged_fore_radial_tokens.squeeze(0), 
-            averaged_middle_radial_tokens.squeeze(0), 
-            averaged_back_radial_tokens.squeeze(0))
+
+    return averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens
 
 def _next_sample_id(results_dir: str) -> int:
     """Compute the next integer sample id based on existing files named like 'sample_#_... .png' or 'sample_#.png'."""

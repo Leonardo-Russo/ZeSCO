@@ -70,7 +70,7 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
             # NOTE: I also got an output which is close to the same but not exactly the same
             with torch.no_grad():
                 ground_images_no_sky, sky_masks, sky_grids = sky_filter(ground_images_denorm.permute(0, 2, 3, 1), debug=debug)
-
+            
             if debug:
                 # Visualize the original image, mask, and the sky-removed image
                 fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(18, 6))
@@ -86,12 +86,22 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
                 ax4.imshow(sky_grids[0, 0].cpu().numpy(), cmap='gray')
                 ax4.set_title("Sky Grid Mask", fontsize=12, fontweight='bold')
                 ax4.axis('off')
-                plt.show()
+                plt.show(block=False)
 
             # Apply depth estimation
             with torch.no_grad():
-                depth_maps, depth_maps_grid = depth_anything(ground_images_no_sky.permute(0, 2, 3, 1), debug=debug)    # (B, 1, H, W), (B, 1, grid_h, grid_w)
+                depth_maps_ground, depth_maps_grid_ground = depth_anything(ground_images_no_sky.permute(0, 2, 3, 1), debug=debug)    # (B, 1, H, W), (B, 1, grid_h, grid_w)
                 # depth_maps, depth_maps_grid = depth_anything(ground_images_denorm.permute(0, 2, 3, 1), debug=debug)    # (B, 1, H, W), (B, 1, grid_h, grid_w)
+
+            # Calculate grid size from actual token dimensions
+            grid_dim = depth_maps_grid_ground.shape[2]  # assuming square grid
+
+            # Create aerial depth map
+            radial_coords = torch.arange(grid_dim, device=device).float()
+            x_grid, y_grid = torch.meshgrid(radial_coords, radial_coords, indexing='ij')
+            center = (grid_dim - 1) / 2
+            radial_dist = torch.sqrt((x_grid - center) ** 2 + (y_grid - center) ** 2)
+            depth_maps_grid_aerial = 1 - (radial_dist / radial_dist.max()).unsqueeze(0).unsqueeze(0)
 
             # Plot one of the depth maps and one of the depth maps grid for debugging
             if debug:
@@ -99,32 +109,36 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
                 ax[0].imshow(ground_images_no_sky[0].permute(1, 2, 0).cpu().numpy())
                 ax[0].set_title('Ground Image without Sky')
                 ax[0].axis('off')
-                ax[1].imshow(depth_maps[0, 0].cpu().numpy(), cmap='plasma')
-                ax[1].set_title('Depth Map')
+                ax[1].imshow(depth_maps_ground[0, 0].cpu().numpy(), cmap='plasma')
+                ax[1].set_title('Depth Map Ground')
                 ax[1].axis('off')
-                ax[2].imshow(depth_maps_grid[0, 0].cpu().numpy(), cmap='plasma')
-                ax[2].set_title('Depth Map Grid')
+                ax[2].imshow(depth_maps_grid_ground[0, 0].cpu().numpy(), cmap='plasma')
+                ax[2].set_title('Depth Map Grid Ground')
                 ax[2].axis('off')
-                plt.show()
+                plt.show(block=False)
 
-            # Calculate grid size from actual token dimensions
-            grid_dim = depth_maps_grid.shape[2]  # assuming square grid
+                fig, ax = plt.subplots(1, 2, figsize=(8, 5))
+                ax[0].imshow(aerial_images_denorm[0].permute(1, 2, 0).cpu().numpy())
+                ax[0].set_title('Aerial Image')
+                ax[0].axis('off')
+                ax[1].imshow(depth_maps_grid_aerial[0, 0].cpu().numpy(), cmap='plasma')
+                ax[1].set_title('Depth Map Grid Aerial')
+                ax[1].axis('off')
+                plt.show(block=False)
 
-            # Load variables from pkl file
-            with open("debug_variables.pkl", "rb") as f:
-                variables = pickle.load(f)
-                ground_image_no_sky_debug = variables['ground_image_no_sky']
-                sky_mask_debug = variables['sky_mask']  # (224, 224)
-                sky_grid_debug = variables['sky_grid']  # (grid_h, grid_w)
-                depth_map_debug = variables['depth_map']
-                depth_map_grid_debug = variables['depth_map_grid']
-
-            # Assign loaded variables to the first element in the batch for comparison
-            ground_images_no_sky[0] = torch.from_numpy(ground_image_no_sky_debug/255.).permute(2, 0, 1).to(device)
-            sky_masks[0, 0] = torch.from_numpy(1 - sky_mask_debug/255.).to(device)
-            sky_grids[0, 0] = torch.from_numpy(1 - sky_grid_debug).to(device)
-            depth_maps[0, 0] = torch.from_numpy(depth_map_debug).to(device)
-            depth_maps_grid[0, 0] = torch.from_numpy(depth_map_grid_debug).to(device)
+            # # Load variables from pkl file
+            # with open("debug_variables.pkl", "rb") as f:
+            #     variables = pickle.load(f)
+            #     ground_image_no_sky_debug = variables['ground_image_no_sky']
+            #     sky_mask_debug = variables['sky_mask']  # (224, 224)
+            #     sky_grid_debug = variables['sky_grid']  # (grid_h, grid_w)
+            #     depth_map_debug = variables['depth_map']
+            #     depth_map_grid_debug = variables['depth_map_grid']
+            # ground_images_no_sky[0] = torch.from_numpy(ground_image_no_sky_debug/255.).permute(2, 0, 1).to(device)
+            # sky_masks[0, 0] = torch.from_numpy(1 - sky_mask_debug/255.).to(device)
+            # sky_grids[0, 0] = torch.from_numpy(1 - sky_grid_debug).to(device)
+            # depth_maps_ground[0, 0] = torch.from_numpy(depth_map_debug).to(device)
+            # depth_maps_grid_ground[0, 0] = torch.from_numpy(depth_map_grid_debug).to(device)
 
             # Compute angle step - NOTE: we will assume all fov_x and grid_dim in the batch are the same!
             angle_steps = fov_x / grid_dim
@@ -132,8 +146,8 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
             angle_step = angle_steps[0].item()
 
             # Compute Averaged Tokens using the weight vector, excluding sky tokens
-            fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, ground_tokens_grid, grid_dim, sky_grids, depth_maps_grid, threshold=threshold)
-            fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, aerial_tokens_grid, grid_dim, sky_grids, depth_maps_grid)
+            fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, ground_tokens_grid, grid_dim, sky_grids, depth_maps_grid_ground, threshold=threshold)
+            fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, aerial_tokens_grid, grid_dim, sky_grids, depth_maps_grid_aerial)
 
             # Find the best alignment
             best_orientations, all_distances, min_distances, confidences = find_alignment(
@@ -265,8 +279,7 @@ if __name__ == '__main__':
     parser.add_argument('--backbone', '-b', type=str, default='dinov3', help='Model to use')
     parser.add_argument('--loss', '-l', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--dataset', '-d', type=str, default='cvglobal', help='Dataset to use')
-    parser.add_argument('--create_figs', '-s', type=str, default='true', help='Create figures')
-    parser.add_argument('--save_mode', '-m', type=str, default='separate', choices=['combined', 'separate', 'both'],
+    parser.add_argument('--save_mode', '-m', type=str, default='separate', choices=['combined', 'separate', 'both', 'none'],
                         help='Save only the combined 2x2 figure, only the 4 separate figures, or both')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with visualizations')
     args = parser.parse_args()
