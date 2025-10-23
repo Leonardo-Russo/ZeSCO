@@ -30,7 +30,6 @@ from .skyfilter import (
 )
 
 from .utils import (
-    get_direction_tokens,
     find_alignment,
     get_averaged_vertical_tokens,
     get_averaged_radial_tokens,

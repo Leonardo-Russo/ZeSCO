@@ -150,7 +150,7 @@ class SkyFilter(nn.Module):
         ground_images_no_sky = ground_images.permute(0, 3, 1, 2) * inv_masks.permute(0, 3, 1, 2)  # (B, C, H, W)
 
         # Use adaptive average pooling to create grid masks
-        sky_masks_float = sky_masks.permute(0, 3, 1, 2) / 255.0     # (B, 1, H, W) normalized to [0, 1]
+        sky_masks_float = inv_masks.permute(0, 3, 1, 2) / 255.0     # (B, 1, H, W) normalized to [0, 1]
 
         # # Plot one of the sky masks and one of the sky grids for debugging
         # fig, ax = plt.subplots(1, 2, figsize=(10, 5))

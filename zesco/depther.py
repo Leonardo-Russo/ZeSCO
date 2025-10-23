@@ -36,6 +36,8 @@ class DepthAnything(nn.Module):
             predicted_depth = outputs.predicted_depth
 
         # Interpolate to the original image size
+        # Note: bicubic interpolation may have slight non-determinism on GPU
+        # For full reproducibility, ensure torch.backends.cudnn.deterministic = True
         prediction = torch.nn.functional.interpolate(
             predicted_depth.unsqueeze(1),
             size=images.shape[1:3] if isinstance(images, np.ndarray) else images[0].shape[:2],

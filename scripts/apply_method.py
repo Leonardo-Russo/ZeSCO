@@ -6,6 +6,7 @@ import os
 import argparse
 from tqdm import tqdm
 import pickle
+import random
 
 from zesco.dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images, get_transforms, denormalize
 from zesco.model import CrossviewModel, CosineSimilarityLoss, CosineSimilarityLossCustom, get_processors
@@ -17,6 +18,21 @@ import warnings
 from transformers import logging
 logging.set_verbosity_error()
 warnings.filterwarnings("ignore")
+
+# Set random seeds for reproducibility
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # Make CUDA operations deterministic
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # For transformers library
+    os.environ['PYTHONHASHSEED'] = str(seed)
+
+set_seed(42)
 
 # matplotlib.use('TkAgg')  # or 'Agg' for non-GUI
 
@@ -38,160 +54,176 @@ def test(model, processors, loss, data_loader, grid_size, device, savepath='unti
         for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in enumerate(data_loader):
             ground_images = ground_images.to(device)
             aerial_images = aerial_images.to(device)
-            batch_size = ground_images.size(0)
             fov_x, fov_y = fovs
+
+            # Denormalize images
+            ground_images_denorm = denormalize(ground_images, processors[0])
+            aerial_images_denorm = denormalize(aerial_images, processors[1])
 
             # Forward pass through the backbone model
             with torch.no_grad():
-                ground_tokens, aerial_tokens = model(ground_images, aerial_images, debug=False)
+                ground_tokens, aerial_tokens, ground_tokens_grid, aerial_tokens_grid = model(ground_images, aerial_images, debug=debug)
+
+            # NOTE: up to here tokens and images are the same, while the filter can produce slightly different outputs due to non-determinism
+
+            # Apply sky filter - NOTE: the masks I'm getting here are 1 for sky, 0 for non-sky; while previously I was using the opposite notation
+            # NOTE: I also got an output which is close to the same but not exactly the same
+            with torch.no_grad():
+                ground_images_no_sky, sky_masks, sky_grids = sky_filter(ground_images_denorm.permute(0, 2, 3, 1), debug=debug)
+
+            if debug:
+                # Visualize the original image, mask, and the sky-removed image
+                fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(18, 6))
+                ax1.imshow(ground_images_denorm[0].permute(1, 2, 0).cpu().numpy())
+                ax1.set_title("Ground Image", fontsize=12, fontweight='bold')
+                ax1.axis('off')
+                ax2.imshow(sky_masks[0, 0].cpu().numpy(), cmap='gray')
+                ax2.set_title("Sky Mask", fontsize=12, fontweight='bold')
+                ax2.axis('off')
+                ax3.imshow(ground_images_no_sky[0].permute(1, 2, 0).cpu().numpy())
+                ax3.set_title("Ground Image without Sky", fontsize=12, fontweight='bold')
+                ax3.axis('off')
+                ax4.imshow(sky_grids[0, 0].cpu().numpy(), cmap='gray')
+                ax4.set_title("Sky Grid Mask", fontsize=12, fontweight='bold')
+                ax4.axis('off')
+                plt.show()
 
             # Apply depth estimation
             with torch.no_grad():
-                depth_maps, depth_maps_grid = depth_anything(ground_images.permute(0, 2, 3, 1), debug=debug)    # (B, 1, H, W), (B, 1, grid_h, grid_w)
+                depth_maps, depth_maps_grid = depth_anything(ground_images_no_sky.permute(0, 2, 3, 1), debug=debug)    # (B, 1, H, W), (B, 1, grid_h, grid_w)
+                # depth_maps, depth_maps_grid = depth_anything(ground_images_denorm.permute(0, 2, 3, 1), debug=debug)    # (B, 1, H, W), (B, 1, grid_h, grid_w)
 
-            # Plot one of the depth maps for debugging
-            plt.figure()
-            plt.imshow(depth_maps[0, 0].cpu().numpy(), cmap='plasma')
-            plt.colorbar()
-            plt.title('Depth Map Example')
-            plt.show()
+            # Plot one of the depth maps and one of the depth maps grid for debugging
+            if debug:
+                fig, ax = plt.subplots(1, 3, figsize=(10, 5))
+                ax[0].imshow(ground_images_no_sky[0].permute(1, 2, 0).cpu().numpy())
+                ax[0].set_title('Ground Image without Sky')
+                ax[0].axis('off')
+                ax[1].imshow(depth_maps[0, 0].cpu().numpy(), cmap='plasma')
+                ax[1].set_title('Depth Map')
+                ax[1].axis('off')
+                ax[2].imshow(depth_maps_grid[0, 0].cpu().numpy(), cmap='plasma')
+                ax[2].set_title('Depth Map Grid')
+                ax[2].axis('off')
+                plt.show()
 
-            # Apply sky filter
-            # NOTE: it's working but I need to check that it is working correctly
-            with torch.no_grad():
-                ground_image_no_sky, sky_mask, sky_grid = sky_filter(ground_images.permute(0, 2, 3, 1), debug=debug)
+            # Calculate grid size from actual token dimensions
+            grid_dim = depth_maps_grid.shape[2]  # assuming square grid
+
+            # Load variables from pkl file
+            with open("debug_variables.pkl", "rb") as f:
+                variables = pickle.load(f)
+                ground_image_no_sky_debug = variables['ground_image_no_sky']
+                sky_mask_debug = variables['sky_mask']  # (224, 224)
+                sky_grid_debug = variables['sky_grid']  # (grid_h, grid_w)
+                depth_map_debug = variables['depth_map']
+                depth_map_grid_debug = variables['depth_map_grid']
+
+            # Assign loaded variables to the first element in the batch for comparison
+            ground_images_no_sky[0] = torch.from_numpy(ground_image_no_sky_debug/255.).permute(2, 0, 1).to(device)
+            sky_masks[0, 0] = torch.from_numpy(1 - sky_mask_debug/255.).to(device)
+            sky_grids[0, 0] = torch.from_numpy(1 - sky_grid_debug).to(device)
+            depth_maps[0, 0] = torch.from_numpy(depth_map_debug).to(device)
+            depth_maps_grid[0, 0] = torch.from_numpy(depth_map_grid_debug).to(device)
+
+            # Compute angle step - NOTE: we will assume all fov_x and grid_dim in the batch are the same!
+            angle_steps = fov_x / grid_dim
+            assert torch.all(angle_steps == angle_steps[0]), "All angle steps in the batch must be the same."
+            angle_step = angle_steps[0].item()
+
+            # Compute Averaged Tokens using the weight vector, excluding sky tokens
+            fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, ground_tokens_grid, grid_dim, sky_grids, depth_maps_grid, threshold=threshold)
+            fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, aerial_tokens_grid, grid_dim, sky_grids, depth_maps_grid)
+
+            # Find the best alignment
+            best_orientations, all_distances, min_distances, confidences = find_alignment(
+                loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, 
+                fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, 
+                grid_dim, angle_step, debug=False
+            )
+
+            # Compute delta yaw for each sample in the batch
+            delta_yaw_batch = np.abs(((90 - (yaws.cpu().numpy() - 180)) - best_orientations.cpu().numpy() + 180) % 360 - 180)
+            delta_yaw_batch[delta_yaw_batch < 0] += 180
+            delta_yaws.extend(delta_yaw_batch.tolist())
 
 
-            for i in range(batch_size):  # Iterate over batch size
-                ground_image = ground_images[i:i+1]
-                aerial_image = aerial_images[i:i+1]
-                fov = (fov_x[i].item(), fov_y[i].item())
-                yaw = yaws[i].item()
-                pitch = pitchs[i].item()
-                
-                # Extract features for the i-th image in the batch
-                ground_features = ground_tokens[i:i+1].squeeze().detach().cpu().numpy()
-                aerial_features = aerial_tokens[i:i+1].squeeze().detach().cpu().numpy()
+            # # Visualization and Saving Results
+            # for i in range(ground_images.shape[0]):
 
-                # Calculate grid size from actual token dimensions
-                grid_dim = int(np.sqrt(ground_features.shape[0]))  # assuming square grid
-                
-                if debug:
-                    print("fov", fov)
-                    print("yaw", yaw)
-                    print("pitch", pitch)
-                    print("normalized_features1.shape:", ground_features.shape)
-                    print("normalized_features2.shape:", aerial_features.shape)
-                    print("grid_size:", grid_dim)
+            #     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
 
-                # Convert images to numpy for visualization
-                if processors is not None:
-                    ground_image_denorm = denormalize(ground_image.squeeze(), processors[0])
-                    aerial_image_denorm = denormalize(aerial_image.squeeze(), processors[1])
-                    ground_image_np = ground_image_denorm.permute(1, 2, 0).detach().cpu().numpy()
-                    aerial_image_np = aerial_image_denorm.permute(1, 2, 0).detach().cpu().numpy()
-                else:
-                    raise ValueError("Processors must be provided for image denormalization.")
+            #     ax1.imshow(ground_image_np)
+            #     ax1.set_title("Ground Image - Yaw: {:.1f}°".format(yaw))
+            #     ax1.axis('off')
 
-                # For the visualization with sky filter, convert to uint8
-                ground_image_vis = ground_image_np * 255
-                aerial_image_vis = aerial_image_np * 255
-                ground_image_vis = ground_image_vis.astype(np.uint8)
-                aerial_image_vis = aerial_image_vis.astype(np.uint8)
+            #     ax2.imshow(aerial_image_np)
+            #     radius = aerial_image_np.shape[0] // 2
+            #     center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
+            #     end_x = int(center[0] + radius * np.cos(np.deg2rad(best_orientation)))
+            #     end_y = int(center[1] - radius * np.sin(np.deg2rad(best_orientation)))
+            #     end_x_GT = int(center[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
+            #     end_y_GT = int(center[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
+            #     line_pred = ax2.plot([center[0], end_x], [center[1], end_y], color='red', linestyle='--', label='Prediction')
+            #     line_gt = ax2.plot([center[0], end_x_GT], [center[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
 
+            #     ax2.set_title("Aerial Image Orientation - Delta: {:.4f}°".format(delta_yaw))
+            #     ax2.legend(loc='upper right')
+            #     ax2.axis('off')
 
-                fov_x_i = fov_x[i].item()                          # horizontal fov in degrees
-                angle_step = fov_x_i / grid_dim
+            #     ax3.plot(np.arange(0, 360, angle_step), distances)
+            #     ax3.set_title("Distance vs Orientation")
+            #     ax3.grid(True)
+            #     ax3.set_xlabel('Orientation')
+            #     ax3.set_ylabel('Distance')
+            #     ax3.set_xlim(0, 360)
+            #     ax3.set_ylim(min(distances), max(distances))
 
-                # Compute Averaged Tokens using the weight vector, excluding sky tokens
-                fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, ground_features, grid_dim, sky_grid, depth_map_grid, threshold=threshold)
-                fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, aerial_features, grid_dim, sky_grid, depth_map_grid)
-                
-                if debug:
-                    print("averaged vertical tokens: ", fore_vert_avg_tokens.shape)
-                    print("averaged radial tokens: ", fore_rad_avg_tokens.shape)   
+            #     ax4.imshow(aerial_image_np)
+            #     radius = aerial_image_np.shape[0] // 2
+            #     center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
+            #     min_dist = min(distances)
+            #     max_dist = max(distances)
+            #     for j, beta in enumerate(np.arange(0, 360, angle_step)):
+            #         end_x = int(center[0] + radius * np.cos(np.deg2rad(beta)))
+            #         end_y = int(center[1] - radius * np.sin(np.deg2rad(beta)))
+            #         # Normalize distances for color map and ensure they're in [0, 1]
+            #         normalized_dist = (distances[j] - min_dist) / (max_dist - min_dist) if max_dist > min_dist else 0.0
+            #         normalized_dist = np.clip(normalized_dist, 0.0, 1.0)
+            #         color = plt.cm.plasma(normalized_dist)
+            #         ax4.plot([center[0], end_x], [center[1], end_y], color=color)
+            #     ax4.set_title("Aerial Image with Distances")
+            #     ax4.axis('off')
 
-                # Find the best alignment
-                best_orientation, distances, min_distance, confidence = find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_dim, fov_x_i, debug=False)
+            #     norm = plt.Normalize(min_dist, max_dist)
+            #     sm = plt.cm.ScalarMappable(cmap='plasma', norm=norm)
+            #     sm.set_array([])
+            #     cbar = plt.colorbar(sm, ax=ax4)
 
-                delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
-                if delta_yaw < 0:
-                    delta_yaw += 180
-                delta_yaws.append(delta_yaw)
+            #     # Determine the next available sample id (per group of images)
+            #     sample_id = _next_sample_id(results_dir)
 
-                fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
+            #     # Save combined and/or separate figures depending on save_mode
+            #     if save_mode in ("combined", "both"):
+            #         combined_path = os.path.join(results_dir, f"sample_{sample_id}_combined.png")
+            #         plt.savefig(combined_path, dpi=300, bbox_inches='tight')
 
-                ax1.imshow(ground_image_np)
-                ax1.set_title("Ground Image - Yaw: {:.1f}°".format(yaw))
-                ax1.axis('off')
+            #     if save_mode in ("separate", "both"):
+            #         _save_separate_figures(results_dir, sample_id,
+            #                                 ground_image_np, aerial_image_np,
+            #                                 best_orientation, yaw,
+            #                                 angle_step, distances)
+            #     if debug:
+            #         plt.show()
 
-                ax2.imshow(aerial_image_np)
-                radius = aerial_image_np.shape[0] // 2
-                center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-                end_x = int(center[0] + radius * np.cos(np.deg2rad(best_orientation)))
-                end_y = int(center[1] - radius * np.sin(np.deg2rad(best_orientation)))
-                end_x_GT = int(center[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
-                end_y_GT = int(center[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
-                line_pred = ax2.plot([center[0], end_x], [center[1], end_y], color='red', linestyle='--', label='Prediction')
-                line_gt = ax2.plot([center[0], end_x_GT], [center[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
+            #     plt.close(fig)
 
-                ax2.set_title("Aerial Image Orientation - Delta: {:.4f}°".format(delta_yaw))
-                ax2.legend(loc='upper right')
-                ax2.axis('off')
-
-                ax3.plot(np.arange(0, 360, angle_step), distances)
-                ax3.set_title("Distance vs Orientation")
-                ax3.grid(True)
-                ax3.set_xlabel('Orientation')
-                ax3.set_ylabel('Distance')
-                ax3.set_xlim(0, 360)
-                ax3.set_ylim(min(distances), max(distances))
-
-                ax4.imshow(aerial_image_np)
-                radius = aerial_image_np.shape[0] // 2
-                center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-                min_dist = min(distances)
-                max_dist = max(distances)
-                for j, beta in enumerate(np.arange(0, 360, angle_step)):
-                    end_x = int(center[0] + radius * np.cos(np.deg2rad(beta)))
-                    end_y = int(center[1] - radius * np.sin(np.deg2rad(beta)))
-                    # Normalize distances for color map and ensure they're in [0, 1]
-                    normalized_dist = (distances[j] - min_dist) / (max_dist - min_dist) if max_dist > min_dist else 0.0
-                    normalized_dist = np.clip(normalized_dist, 0.0, 1.0)
-                    color = plt.cm.plasma(normalized_dist)
-                    ax4.plot([center[0], end_x], [center[1], end_y], color=color)
-                ax4.set_title("Aerial Image with Distances")
-                ax4.axis('off')
-
-                norm = plt.Normalize(min_dist, max_dist)
-                sm = plt.cm.ScalarMappable(cmap='plasma', norm=norm)
-                sm.set_array([])
-                cbar = plt.colorbar(sm, ax=ax4)
-
-                # Determine the next available sample id (per group of images)
-                sample_id = _next_sample_id(results_dir)
-
-                # Save combined and/or separate figures depending on save_mode
-                if save_mode in ("combined", "both"):
-                    combined_path = os.path.join(results_dir, f"sample_{sample_id}_combined.png")
-                    plt.savefig(combined_path, dpi=300, bbox_inches='tight')
-
-                if save_mode in ("separate", "both"):
-                    _save_separate_figures(results_dir, sample_id,
-                                            ground_image_np, aerial_image_np,
-                                            best_orientation, yaw,
-                                            angle_step, distances)
-                if debug:
-                    plt.show()
-
-                plt.close(fig)
-
-                # Update progress bar with current results
-                pbar.set_postfix({
-                    'Delta Yaw': f"{np.mean(delta_yaws):.2f}°", 
-                    'Batch': f"{batch_idx+1}/{len(data_loader)}"
-                })
-                pbar.update(1)  # Increment by 1 for each image processed
+            # Update progress bar with current results
+            pbar.set_postfix({
+                'Delta Yaw': f"{np.mean(delta_yaws):.2f}°", 
+                'Batch': f"{batch_idx+1}/{len(data_loader)}"
+            })
+            pbar.update(1)  # Increment by 1 for each image processed
 
     # Output the delta_yaw errors
     delta_yaws = np.array(delta_yaws)
@@ -233,10 +265,10 @@ if __name__ == '__main__':
     parser.add_argument('--backbone', '-b', type=str, default='dinov3', help='Model to use')
     parser.add_argument('--loss', '-l', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--dataset', '-d', type=str, default='cvglobal', help='Dataset to use')
-    parser.add_argument('--debug', '-db', type=str, default='False', help='Debug mode')
     parser.add_argument('--create_figs', '-s', type=str, default='true', help='Create figures')
     parser.add_argument('--save_mode', '-m', type=str, default='separate', choices=['combined', 'separate', 'both'],
                         help='Save only the combined 2x2 figure, only the 4 separate figures, or both')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode with visualizations')
     args = parser.parse_args()
     
     # Get Dataset Images
@@ -272,7 +304,7 @@ if __name__ == '__main__':
 
     # Instantiate the dataset and dataloader
     paired_dataset = PairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground, cutout_from_pano=True)
-    data_loader = DataLoader(paired_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    data_loader = DataLoader(paired_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     # Define the Device
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -299,5 +331,5 @@ if __name__ == '__main__':
          grid_size,
          device,
          savepath=args.name,
-         debug=args.debug.lower() == 'true',
+         debug=args.debug,
          save_mode=args.save_mode)
