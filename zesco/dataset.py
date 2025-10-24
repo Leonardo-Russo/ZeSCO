@@ -255,7 +255,7 @@ class PairedImagesDataset(Dataset):
         return ground_image, aerial_image, fov, yaw, pitch
     
 
-def get_transforms(processor, image_size, aerial_scaling):
+def get_transforms(processor, image_size, aerial_scaling, crop_percentage=0.25):
         
     if isinstance(processor, tuple):
         processor_ground, processor_aerial = processor
@@ -285,7 +285,7 @@ def get_transforms(processor, image_size, aerial_scaling):
 
     transform_ground = transforms.Compose([
         transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-        transforms.Lambda(lambda img: transforms.functional.crop(img, int(img.size[1] * 0.25), 0, int(img.size[1] * 0.5), img.size[0])),
+        transforms.Lambda(lambda img: transforms.functional.crop(img, int(img.size[1] * crop_percentage), 0, int(img.size[1] * (1 - 2*crop_percentage)), img.size[0])),
         transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
         transforms.ToTensor(),
         transforms.Normalize(

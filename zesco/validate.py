@@ -32,7 +32,7 @@ def validate(model, processors, data_loader, config):
     threshold = config['threshold']
 
     # Create results directory and retrieve batch size
-    results_dir = os.path.join(r'..\results', output_dir)
+    results_dir = os.path.join(config['main_output_dir'], output_dir)
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
 
@@ -71,7 +71,6 @@ def validate(model, processors, data_loader, config):
             fov_x, fov_y = fovs
 
             # Process each image in the batch individually
-            # Note: batch_size is already defined above
             for i in range(batch_size):  # Iterate over batch size
                 ground_image = ground_images[i:i+1]
                 aerial_image = aerial_images[i:i+1]
@@ -218,16 +217,17 @@ def validate(model, processors, data_loader, config):
     print(f"Median Delta Yaw Error: {error_median}")
 
     # Show an histogram of the delta_yaw errors
-    plt.figure(figsize=(10, 6))
-    plt.hist(delta_yaws, bins=50, edgecolor='black', alpha=0.7)
-    plt.xlabel('Absolute Orientation Error (degrees)', fontsize=12)
-    plt.ylabel('Frequency', fontsize=12)
-    plt.title(f'Orientation Error Distribution - {config['dataset']}\n' +
-             f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, Std: {error_std:.2f}°',
-             fontsize=14)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(os.path.join(results_dir, 'delta_yaws_hist.png'), dpi=300, bbox_inches='tight')
+    if save_mode in ['hist', 'all']:
+        plt.figure(figsize=(10, 6))
+        plt.hist(delta_yaws, bins=50, edgecolor='black', alpha=0.7)
+        plt.xlabel('Absolute Orientation Error (degrees)', fontsize=12)
+        plt.ylabel('Frequency', fontsize=12)
+        plt.title(f'Orientation Error Distribution - {config['dataset']}\n' +
+                f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, Std: {error_std:.2f}°',
+                fontsize=14)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(results_dir, 'delta_yaws_hist.png'), dpi=300, bbox_inches='tight')
     
     # Save delta yaws to pickle file
     with open(os.path.join(results_dir, 'delta_yaws.pkl'), 'wb') as f:
@@ -245,3 +245,5 @@ def validate(model, processors, data_loader, config):
         f.write(f"Median Delta Yaw Error:     {np.median(delta_yaws):.4f}°\n")
         f.write(f"Minimum Delta Yaw Error:    {np.min(delta_yaws):.4f}°\n")
         f.write(f"Maximum Delta Yaw Error:    {np.max(delta_yaws):.4f}°\n")
+
+    return delta_yaws
