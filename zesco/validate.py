@@ -31,6 +31,7 @@ def validate(model, processors, data_loader, config):
     save_mode = config['save_mode']
     threshold = config['threshold']
     debug = config['debug']
+    num_layers = config['num_layers']
 
     # Create results directory and retrieve batch size
     results_dir = os.path.join(config['main_output_dir'], output_dir)
@@ -127,8 +128,24 @@ def validate(model, processors, data_loader, config):
                 angle_step = fov_x_i / grid_dim
 
                 # Compute Averaged Tokens using the weight vector, excluding sky tokens
-                vertical_averaged_tokens = get_averaged_vertical_tokens(angle_step, ground_features, grid_dim, sky_grid, depth_map_grid_ground, threshold=threshold, debug=debug)
-                radial_averaged_tokens = get_averaged_radial_tokens(angle_step, aerial_features, grid_dim, sky_grid, depth_map_grid_aerial, debug=debug)
+                vertical_averaged_tokens = get_averaged_vertical_tokens(
+                    angle_step=angle_step,
+                    image_tokens=ground_features,
+                    grid_dim=grid_dim,
+                    sky_grid=sky_grid,
+                    depth_map_grid=depth_map_grid_ground,
+                    num_layers=num_layers,
+                    debug=debug
+                )
+                radial_averaged_tokens = get_averaged_radial_tokens(
+                    angle_step=angle_step,
+                    image_tokens=aerial_features,
+                    grid_dim=grid_dim,
+                    sky_grid=sky_grid,
+                    depth_map_grid=depth_map_grid_aerial,
+                    num_layers=num_layers,
+                    debug=debug
+                )
 
                 if debug:
                     print("averaged vertical tokens: ", vertical_averaged_tokens.shape)

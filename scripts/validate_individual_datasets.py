@@ -24,6 +24,7 @@ DATASETS = ['AFR', 'AFU', 'ASR', 'ASU', 'EUR', 'EUU', 'NAR', 'NAU', 'SAR', 'SAU'
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test the ZeSCO model on individual datasets.')
     parser.add_argument('--backbone', type=str, default='dinov3', help='Model to use')
+    parser.add_argument('--num_layers', type=int, default=3, help='Number of layers in which to divide the image')
     parser.add_argument('--crop_percentage', type=float, default=0.25, help='Percentage of the image to crop')
     parser.add_argument('--loss', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--sample_percentage', type=float, default=0.2, help='Percentage of dataset to sample for testing')
@@ -57,6 +58,7 @@ if __name__ == '__main__':
     config = {
         'output_dir': None,
         'backbone': args.backbone,
+        'num_layers': args.num_layers,
         'loss': args.loss,
         'dataset': None,
         'crop_percentage': args.crop_percentage,
