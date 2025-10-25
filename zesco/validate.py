@@ -127,8 +127,8 @@ def validate(model, processors, data_loader, config):
                 angle_step = fov_x_i / grid_dim
 
                 # Compute Averaged Tokens using the weight vector, excluding sky tokens
-                vertical_averaged_tokens, vertical_weights = get_averaged_vertical_tokens(angle_step, ground_features, grid_dim, sky_grid, depth_map_grid_ground, threshold=threshold, debug=debug)
-                radial_averaged_tokens, radial_weights = get_averaged_radial_tokens(angle_step, aerial_features, grid_dim, sky_grid, depth_map_grid_aerial, debug=debug)
+                vertical_averaged_tokens = get_averaged_vertical_tokens(angle_step, ground_features, grid_dim, sky_grid, depth_map_grid_ground, threshold=threshold, debug=debug)
+                radial_averaged_tokens = get_averaged_radial_tokens(angle_step, aerial_features, grid_dim, sky_grid, depth_map_grid_aerial, debug=debug)
 
                 if debug:
                     print("averaged vertical tokens: ", vertical_averaged_tokens.shape)
