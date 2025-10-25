@@ -30,6 +30,7 @@ def validate(model, processors, data_loader, config):
     debug = config['debug']
     save_mode = config['save_mode']
     threshold = config['threshold']
+    debug = config['debug']
 
     # Create results directory and retrieve batch size
     results_dir = os.path.join(config['main_output_dir'], output_dir)
@@ -51,6 +52,17 @@ def validate(model, processors, data_loader, config):
     # Initialize the Sky Filter and DepthAnything
     sky_filter = SkyFilter(grid_size=grid_size)
     depth_anything = DepthAnything(grid_size=grid_size)
+
+    # Retrieve grid dimension
+    assert grid_size[0] == grid_size[1], "Grid size must be square."
+    grid_dim = grid_size[0]
+
+    # Create aerial depth map grid using numpy
+    radial_coords = np.arange(grid_dim).astype(np.float32)
+    x_grid, y_grid = np.meshgrid(radial_coords, radial_coords, indexing='ij')
+    center = (grid_dim - 1) / 2
+    radial_dist = np.sqrt((x_grid - center) ** 2 + (y_grid - center) ** 2)
+    depth_map_grid_aerial = 1 - (radial_dist / radial_dist.max())
 
     # Core Processing Loop
     delta_yaws = []
@@ -81,16 +93,13 @@ def validate(model, processors, data_loader, config):
                 # Extract features for the i-th image in the batch
                 ground_features = ground_tokens[i:i+1].squeeze().detach().cpu().numpy()
                 aerial_features = aerial_tokens[i:i+1].squeeze().detach().cpu().numpy()
-
-                # Calculate grid size from actual token dimensions
-                grid_dim = int(np.sqrt(ground_features.shape[0]))  # assuming square grid
                 
                 if debug:
                     print("fov", fov)
                     print("yaw", yaw)
                     print("pitch", pitch)
-                    print("normalized_features1.shape:", ground_features.shape)
-                    print("normalized_features2.shape:", aerial_features.shape)
+                    print("ground_features.shape:", ground_features.shape)
+                    print("aerial_features.shape:", aerial_features.shape)
                     print("grid_size:", grid_dim)
 
                 # Convert images to numpy for visualization
@@ -112,21 +121,24 @@ def validate(model, processors, data_loader, config):
                 ground_image_no_sky, sky_mask, sky_grid = sky_filter(ground_image_vis, debug=debug)
 
                 # Apply depth estimation
-                depth_map, depth_map_grid = depth_anything(ground_image_no_sky, debug=debug)
+                depth_map_ground, depth_map_grid_ground = depth_anything(ground_image_no_sky, debug=debug)
 
-                fov_x_i = fov_x[i].item()                          # horizontal fov in degrees
+                fov_x_i = fov_x[i].item()   # horizontal fov in degrees
                 angle_step = fov_x_i / grid_dim
 
                 # Compute Averaged Tokens using the weight vector, excluding sky tokens
-                fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, ground_features, grid_dim, sky_grid, depth_map_grid, threshold=threshold)
-                fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, aerial_features, grid_dim, sky_grid, depth_map_grid)
-                
+                vertical_averaged_tokens, vertical_weights = get_averaged_vertical_tokens(angle_step, ground_features, grid_dim, sky_grid, depth_map_grid_ground, threshold=threshold, debug=debug)
+                radial_averaged_tokens, radial_weights = get_averaged_radial_tokens(angle_step, aerial_features, grid_dim, sky_grid, depth_map_grid_aerial, debug=debug)
+
                 if debug:
-                    print("averaged vertical tokens: ", fore_vert_avg_tokens.shape)
-                    print("averaged radial tokens: ", fore_rad_avg_tokens.shape)   
+                    print("averaged vertical tokens: ", vertical_averaged_tokens.shape)
+                    print("averaged radial tokens: ", radial_averaged_tokens.shape)
+
+                if debug:
+                    return
 
                 # Find the best alignment
-                best_orientation, distances, min_distance, confidence = find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_dim, fov_x_i, debug=False)
+                best_orientation, distances, min_distance, confidence = find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_dim, fov_x_i, debug=False)
 
                 delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
                 if delta_yaw < 0:

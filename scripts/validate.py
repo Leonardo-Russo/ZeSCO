@@ -24,7 +24,7 @@ if __name__ == '__main__':
     parser.add_argument('--backbone', type=str, default='dinov3', help='Model to use')
     parser.add_argument('--loss', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--dataset', type=str, default='cvglobal', help='Dataset to use')
-    parser.add_argument('--crop_percentage', type=float, default=0.25, help='Percentage of the image to crop')
+    parser.add_argument('--crop_percentage', type=float, default=0.3, help='Percentage of the image to crop')
     parser.add_argument('--sample_percentage', type=float, default=0.02, help='Percentage of dataset to sample for testing')
     parser.add_argument('--output_dir', type=str, default='untitled', help='Path to save the model and results')
     parser.add_argument('--threshold', type=float, default=0.4, help='Needed for the middleground weights')
@@ -64,7 +64,8 @@ if __name__ == '__main__':
         'crop_percentage': args.crop_percentage,
         'sample_percentage': args.sample_percentage,
         'save_mode': args.save_mode,
-        'debug': args.debug,
+        # 'debug': args.debug,
+        'debug': True,
         'threshold': args.threshold,
         'image_size': image_size,
         'aerial_scaling': aerial_scaling,

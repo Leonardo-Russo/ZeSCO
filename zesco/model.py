@@ -497,26 +497,20 @@ def get_combined_embedding_visualization_all(tokens1, tokens2, tokens3, tokens4,
 
 
 class CosineSimilarityLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, reduction='mean'):
         super(CosineSimilarityLoss, self).__init__()
+        self.reduction = reduction
 
     def forward(self, x1, x2):
-        # x1_flat = x1.view(x1.size(0), -1)           # flatten the last two dimensions
-        # x2_flat = x2.view(x2.size(0), -1)
         cos_sim = F.cosine_similarity(torch.tensor(x1), torch.tensor(x2), dim=-1)         # compute cosine similarity        
-        loss = 1 - cos_sim.mean()                                       # convert similarity to loss
-        # print("cos_sim shape: ", cos_sim.shape)
-        # print("loss: ", loss)
 
-        # 768 is the inner dimension -> output is 256 x 256
+        if self.reduction == 'mean':
+            loss = 1 - cos_sim.mean()                                       # convert similarity to loss
+        elif self.reduction == 'sum':
+            loss = 1 - cos_sim.sum()
+        else:
+            raise ValueError("Invalid reduction mode")
 
-
-        # normalize so that each token has norm 1
-        # then matrix multiplication for its self to be MxM
-        # I want all diagonal elements to eb 1 and non-diag to be 0
-
-        ## Implementation:
-        # compute cross-entropy loss for the matrixs
         return loss
     
 

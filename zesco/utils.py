@@ -4,7 +4,7 @@ import os
 import re
 
 
-def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=16):
+def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_dim=16, sky_grid=None):
     """
     Retrieves direction tokens and their corresponding indices based on the given angle or vertical index.
     Parameters:
@@ -12,6 +12,7 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=16):
     - angle (float, optional): The angle in degrees for radial direction. Defaults to None.
     - vertical_idx (int, optional): The vertical index for vertical line. Defaults to None.
     - grid_size (int, optional): The size of the grid. Defaults to 16.
+    - sky_grid (ndarray, optional): The sky grid for additional context, if provided only valid tokens are returned. Defaults to None.
     Returns:
     - direction_tokens (ndarray): The array of direction tokens.
     - indices (list): The list of indices corresponding to the direction tokens.
@@ -21,44 +22,55 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=16):
     - The function returns an empty array if neither angle nor vertical_idx is provided.
     - The function stops retrieving tokens if they are out of bounds.
     """
+    if sky_grid is None:
+        sky_grid = np.ones((grid_dim, grid_dim))  # default to all ground if no sky_grid provided
     
     if angle is not None:  # Radial direction
-        center = (grid_size // 2, grid_size // 2)
+        center = (grid_dim // 2, grid_dim // 2)
         direction_tokens = []
         indices = []
-        for r in range(grid_size):
-            delta = 4
+        for r in range(grid_dim):
             x = round(center[0] + r * np.cos(np.deg2rad(angle)))
             y = round(center[1] - r * np.sin(np.deg2rad(angle)))
-            if 0 <= x < grid_size and 0 <= y < grid_size:
-                idx = y * grid_size + x
+            if 0 <= x < grid_dim and 0 <= y < grid_dim:
+                idx = y * grid_dim + x
                 if tokens is None:
                     direction_tokens.append(None)
                     indices.append((y, x))
                 else:
-                    if idx < tokens.shape[0]:  # Ensure index is within bounds
+                    if idx < tokens.shape[0]:
                         direction_tokens.append(tokens[idx])
                         indices.append((y, x))
                     else:
-                        break  # Stop if out of bounds
+                        break  # out of bounds
             else:
-                break  # Stop if out of bounds
+                break  # out of bounds
         return np.array(direction_tokens), indices
-    elif vertical_idx is not None:  # Vertical line
-        direction_tokens = tokens[vertical_idx::grid_size]  # extract each vertical line
-        return direction_tokens, [(i, vertical_idx) for i in range(grid_size)]
-        
-def find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_size, image_span, debug=False):
+    elif vertical_idx is not None:      # vertical line
+        direction_tokens = tokens[vertical_idx::grid_dim]  # extract each vertical line
+
+        # Only grab valid tokens
+        valid_tokens = []
+        valid_indices = []
+        for i in range(grid_dim):
+            y = i
+            x = vertical_idx
+            if sky_grid[y, x] == 1:  # 1 indicates ground, 0 indicates sky
+                valid_tokens.append(direction_tokens[i])
+                valid_indices.append((y, x))
+        return np.array(valid_tokens), valid_indices
+
+def find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_size, image_span, debug=False):
     """
     Finds the alignment between averaged vertical tokens and averaged radial tokens.
     Parameters:
-    - averaged_vertical_tokens (ndarray): A numpy array containing the averaged vertical tokens.
-    - averaged_radial_tokens (ndarray): A numpy array containing the averaged radial tokens.
+    - vertical_averaged_tokens (ndarray): A numpy array of shape (num_layers, grid_size, feature_dim)
+    - radial_averaged_tokens (ndarray): A numpy array of shape (num_layers, num_orientations, feature_dim)
     - grid_size (int): The size of the grid.
     - image_span (float): The span of the image.
     Returns:
     - best_orientation (float): The best orientation in degrees.
-    - distances (list): A list of distances for each orienta'ption.
+    - distances (list): A list of distances for each orientation.
     - min_distance (float): The minimum distance.
     - confidence (float): The confidence score.
     """
@@ -71,14 +83,16 @@ def find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_a
     for j, beta in enumerate(np.linspace(0, 360 - angle_step, num_steps)):
         cone_distance = 0
         for i in range(grid_size):
+            
+            # Get radial tokens for all layers at the current orientation
+            # radial_averaged_tokens shape: (num_layers, num_orientations, feature_dim)
+            rad_idx = int(j + i - grid_size/2) % radial_averaged_tokens.shape[1]
+            rad_avg_tokens = radial_averaged_tokens[:, rad_idx, :]  # shape: (num_layers, feature_dim)
 
-            fore_rad_avg_token = fore_rad_avg_tokens[int(j + i - grid_size/2) % fore_rad_avg_tokens.shape[0]]
-            midd_rad_avg_token = midd_rad_avg_tokens[int(j + i - grid_size/2) % midd_rad_avg_tokens.shape[0]]
-            back_rad_avg_token = back_rad_avg_tokens[int(j + i - grid_size/2) % back_rad_avg_tokens.shape[0]]
-            # print(f"beta: {beta:.2f} \tangle: {(j + i - grid_size/2)*angle_step} \tindex: {int(j + i - grid_size/2) % averaged_radial_tokens.shape[0]}")       
-
-            vert_avg_tokens = np.vstack((fore_vert_avg_tokens[(grid_size-1)-i], midd_vert_avg_tokens[(grid_size-1)-i], back_vert_avg_tokens[(grid_size-1)-i]))            
-            rad_avg_tokens = np.vstack((fore_rad_avg_token, midd_rad_avg_token, back_rad_avg_token))
+            # Get vertical tokens for all layers at the current vertical line
+            # vertical_averaged_tokens shape: (num_layers, grid_size, feature_dim)
+            vert_idx = (grid_size - 1) - i
+            vert_avg_tokens = vertical_averaged_tokens[:, vert_idx, :]  # shape: (num_layers, feature_dim)
 
             cone_distance += loss(vert_avg_tokens, rad_avg_tokens)
 
@@ -97,89 +111,204 @@ def find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_a
 
     return best_orientation, distances, min_distance, confidence
 
-def get_averaged_vertical_tokens(angle_step, normalized_features1, grid_size, sky_grid, depth_map_grid, threshold=0.5):
-    
-    averaged_foreground_tokens = []
-    averaged_middleground_tokens = []
-    averaged_background_tokens = []
-    for i in range(grid_size):
-        vertical_tokens, indices = get_direction_tokens(normalized_features1, vertical_idx=i, grid_size=grid_size)
-        valid_tokens = []
-        foreground_weights = []
-        middleground_weights = []
-        background_weights = []
-        for token, (y, x) in zip(vertical_tokens, indices):
-            if sky_grid[y, x] == 1:  # 1 indicates ground, 0 indicates sky
-                valid_tokens.append(token)
-                foreground_weights.append(depth_map_grid[y, x])
-                if depth_map_grid[y, x] <= 0.5:
-                    middleground_weights.append((1 / threshold) * depth_map_grid[y, x])
-                else:
-                    middleground_weights.append((1 - depth_map_grid[y, x]) / depth_map_grid[y, x])
-                background_weights.append(1 - depth_map_grid[y, x])
-        
-        if valid_tokens:
-            valid_tokens = np.array(valid_tokens)
-            foreground_weights = np.array(foreground_weights)
-            middleground_weights = np.array(middleground_weights)
-            background_weights = np.array(background_weights)
-            foreground_weights /= np.sum(foreground_weights)  # Normalize the weights
-            middleground_weights /= np.sum(middleground_weights)
-            background_weights /= np.sum(background_weights)
+def get_averaged_vertical_tokens(angle_step, image_tokens, grid_size, sky_grid, depth_map_grid, threshold=0.5, num_layers=3, debug=False):
+
+    averaged_vertical_tokens = []
+    vertical_weights = []
+    for i in range(grid_size):  # loop across vertical lines
+        vertical_tokens, indices = get_direction_tokens(image_tokens, vertical_idx=i, grid_dim=grid_size, sky_grid=sky_grid)
+
+        if num_layers == 1:
+
+            # Compute equal weights for all tokens
+            weights = np.ones_like(vertical_tokens) / len(vertical_tokens)
+
+        elif num_layers == 2:
+
+            # Compute foreground and background weights
+            weights_fore = np.array([depth_map_grid[y, x] for (y, x) in indices])
+            weights_back = 1 - weights_fore
+            weights_fore /= np.sum(weights_fore)
+            weights_back /= np.sum(weights_back)
+
+            weights = np.stack((weights_fore, weights_back))
             
-            # Calculate weighted average only on valid (non-sky) tokens
-            foreground_avg = np.average(valid_tokens, axis=0, weights=foreground_weights)
-            middleground_avg = np.average(valid_tokens, axis=0, weights=middleground_weights)
-            background_avg = np.average(valid_tokens, axis=0, weights=background_weights)
-            averaged_foreground_tokens.append(foreground_avg)
-            averaged_middleground_tokens.append(middleground_avg)
-            averaged_background_tokens.append(background_avg)
-        else:
-            # If no valid tokens are found (i.e., entire column is sky), append a zero vector or any placeholder
-            averaged_foreground_tokens.append(np.zeros_like(vertical_tokens[0]))
-            averaged_middleground_tokens.append(np.zeros_like(vertical_tokens[0]))
-            averaged_background_tokens.append(np.zeros_like(vertical_tokens[0]))
-    
-    averaged_foreground_tokens = np.array(averaged_foreground_tokens)
-    averaged_middleground_tokens = np.array(averaged_middleground_tokens)
-    averaged_background_tokens = np.array(averaged_background_tokens)
+        elif num_layers >= 3:
+            
+            # Compute foreground and background weights
+            weights_fore = np.array([depth_map_grid[y, x] for (y, x) in indices])
+            weights_back = 1 - weights_fore
+            weights_fore /= np.sum(weights_fore)
+            weights_back /= np.sum(weights_back)
 
-    return averaged_foreground_tokens, averaged_middleground_tokens, averaged_background_tokens
+            # Compute middleground weights
+            weights_middle = []
+            midpoints = np.linspace(0, 1, num_layers)[1:-1]  # exclude 0 and 1
+            for m in midpoints:
+                mth_weights = []
+                for (y, x) in indices:
+                    if depth_map_grid[y, x] <= m:
+                        mth_weights.append((1 / m) * depth_map_grid[y, x])
+                    else:
+                        mth_weights.append((1 - depth_map_grid[y, x]) / (1 - m))
+                weights_middle.append(np.array(mth_weights))
+            for k in range(len(weights_middle)):    # normalization
+                weights_middle[k] /= np.sum(weights_middle[k])
 
-def get_averaged_radial_tokens(angle_step, normalized_features2, grid_size, sky_grid, depth_map_grid):
-    
-    averaged_fore_radial_tokens = []
-    averaged_middle_radial_tokens = []
-    averaged_back_radial_tokens = []
+            weights = np.stack((weights_fore, *weights_middle, weights_back))
+        
+        if len(vertical_tokens) == 0:
+            weights = np.zeros_like(weights)
+        averaged_tokens = weights @ vertical_tokens  # shape: (num_layers, feature_dim)
+        vertical_weights.append(weights)
+        averaged_vertical_tokens.append(averaged_tokens)
+
+    if debug:   # show the weights computed
+
+        # Pad weights to same size for visualization
+        max_tokens = max(w.shape[1] for w in vertical_weights)
+        vertical_weights_padded = []
+        for weights in vertical_weights:
+            padded = np.zeros((num_layers, max_tokens))
+            padded[:, :weights.shape[1]] = weights
+            vertical_weights_padded.append(padded)
+        vertical_weights_padded = np.array(vertical_weights_padded)  # shape: (grid_size, num_layers, max_tokens)
+        
+        # Create subplot grid
+        ncols = min(num_layers, 3)  # Max 3 columns
+        nrows = (num_layers + ncols - 1) // ncols  # Ceiling division
+        fig, axs = plt.subplots(nrows, ncols, figsize=(3*ncols + 1, 3*nrows), squeeze=False)
+        
+        for layer in range(num_layers):
+            row = layer // ncols
+            col = layer % ncols
+            ax = axs[row, col]
+            
+            # Plot weights heatmap
+            im = ax.imshow(vertical_weights_padded[:, layer, :].T, aspect='auto', cmap='viridis', interpolation='nearest', vmin=0, vmax=1, origin='lower')
+            ax.set_title(f'Layer {layer+1} Weights', fontsize=12, fontweight='bold')
+            ax.set_xlabel('Vertical Line Index', fontsize=10)
+            ax.set_ylabel('Token Index along Vertical Line', fontsize=10)
+            
+            # Add colorbar
+            plt.colorbar(im, ax=ax, label='Weight', fraction=0.046, pad=0.04)
+        
+        # Hide unused subplots
+        for layer in range(num_layers, nrows * ncols):
+            row = layer // ncols
+            col = layer % ncols
+            axs[row, col].axis('off')
+        
+        plt.tight_layout()
+        plt.savefig(r'..\debug\vertical_weights_sample.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close()
+
+    averaged_vertical_tokens = np.array(averaged_vertical_tokens)  # shape: (grid_size, num_layers, feature_dim)
+    averaged_vertical_tokens = np.transpose(averaged_vertical_tokens, (1, 0, 2))  # shape: (num_layers, grid_size, feature_dim)
+    return averaged_vertical_tokens, vertical_weights
+
+def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, depth_map_grid, num_layers=3, debug=False):
+
+    averaged_radial_tokens = []
+    radial_weights = []
     for beta in np.arange(0, 360, angle_step):
-        radial_tokens, _ = get_direction_tokens(normalized_features2, angle=beta, grid_size=grid_size)
-        increasing_weights = np.linspace(0, 1, len(radial_tokens))
-        decreasing_weights = np.linspace(1, 0, len(radial_tokens))
+        radial_tokens, indices = get_direction_tokens(image_tokens, angle=beta, grid_dim=grid_size)
 
-        # Ensure middle_weights has the same length as radial_tokens
-        half_len = len(radial_tokens) // 2
-        middle_weights = np.hstack((np.linspace(0, 1, half_len, endpoint=False), np.linspace(1, 0, len(radial_tokens) - half_len)))
+        if num_layers == 1:
 
-        increasing_weights /= np.sum(increasing_weights)
-        decreasing_weights /= np.sum(decreasing_weights)
-        middle_weights /= np.sum(middle_weights)
+            # Compute equal weights for all tokens
+            weights = np.ones_like(radial_tokens) / len(radial_tokens)
+            weights = weights[np.newaxis, :]  # shape: (1, num_tokens)
 
-        # print("radial tokens:", radial_tokens.shape)
-        # print("middle weights:", middle_weights.shape)
+        elif num_layers == 2:
 
-        foreground_avg = np.average(radial_tokens, axis=0, weights=decreasing_weights)
-        middleground_avg = np.average(radial_tokens, axis=0, weights=middle_weights)
-        background_avg = np.average(radial_tokens, axis=0, weights=increasing_weights)
+            # Compute foreground and background weights
+            weights_fore = np.linspace(1, 0, len(radial_tokens)) / len(radial_tokens)
+            weights_back = np.linspace(0, 1, len(radial_tokens)) / len(radial_tokens)
 
-        averaged_fore_radial_tokens.append(foreground_avg)
-        averaged_middle_radial_tokens.append(middleground_avg)
-        averaged_back_radial_tokens.append(background_avg)
+            weights = np.stack((weights_fore, weights_back))    # shape: (2, num_tokens)
+            
+        elif num_layers >= 3:
+            
+            # Compute foreground and background weights
+            weights_fore = np.linspace(1, 0, len(radial_tokens)) / len(radial_tokens)
+            weights_back = np.linspace(0, 1, len(radial_tokens)) / len(radial_tokens)
 
-    averaged_fore_radial_tokens = np.array(averaged_fore_radial_tokens)         # 64x768
-    averaged_middle_radial_tokens = np.array(averaged_middle_radial_tokens)
-    averaged_back_radial_tokens = np.array(averaged_back_radial_tokens)
+            # Compute middleground weights
+            weights_middle = []
+            midpoints = np.linspace(0, 1, num_layers)[1:-1]  # exclude 0 and 1
+            for m in midpoints:
+                mth_weights = []
+                for (y, x) in indices:
+                    if depth_map_grid[y, x] <= m:
+                        mth_weights.append((1 / m) * depth_map_grid[y, x])
+                    else:
+                        mth_weights.append((1 - depth_map_grid[y, x]) / (1 - m))
+                weights_middle.append(np.array(mth_weights))
+            for k in range(len(weights_middle)):    # normalization
+                weights_middle[k] /= np.sum(weights_middle[k])
 
-    return averaged_fore_radial_tokens, averaged_middle_radial_tokens, averaged_back_radial_tokens
+            weights = np.stack((weights_fore, *weights_middle, weights_back))
+
+        if len(radial_tokens) == 0:
+            weights = np.zeros_like(weights)
+        averaged_tokens = weights @ radial_tokens  # shape: (num_layers, feature_dim)
+        radial_weights.append(weights)
+        averaged_radial_tokens.append(averaged_tokens)
+
+    if debug:   # show the weights computed
+
+        # Pad weights to same size for visualization
+        max_tokens = max(w.shape[1] for w in radial_weights)
+        radial_weights_padded = []
+        for weights in radial_weights:
+            padded = np.zeros((num_layers, max_tokens))
+            padded[:, :weights.shape[1]] = weights
+            radial_weights_padded.append(padded)
+        radial_weights_padded = np.array(radial_weights_padded)  # shape: (num_orientations, num_layers, max_tokens)
+        
+        # Create subplot grid
+        ncols = min(num_layers, 3)  # Max 3 columns
+        nrows = (num_layers + ncols - 1) // ncols  # Ceiling division
+        fig, axs = plt.subplots(nrows, ncols, figsize=(3*ncols + 1, 3*nrows), squeeze=False)
+        
+        for layer in range(num_layers):
+            row = layer // ncols
+            col = layer % ncols
+            ax = axs[row, col]
+            
+            # Plot weights heatmap
+            im = ax.imshow(radial_weights_padded[:, layer, :].T, aspect='auto', cmap='viridis', interpolation='nearest', vmin=0, vmax=1, origin='lower')
+            ax.set_title(f'Layer {layer+1} Weights (Radial)', fontsize=12, fontweight='bold')
+            ax.set_xlabel('Orientation (degrees)', fontsize=10)
+            ax.set_ylabel('Token Index along Radial Line', fontsize=10)
+            
+            # Set x-axis ticks to show angles
+            num_orientations = radial_weights_padded.shape[0]
+            tick_positions = np.linspace(0, num_orientations - 1, 9)  # 9 ticks for 0, 45, 90, ..., 360
+            tick_labels = [f'{int(angle)}°' for angle in np.linspace(0, 360, 9)]
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels(tick_labels, rotation=45)
+            
+            # Add colorbar
+            plt.colorbar(im, ax=ax, label='Weight', fraction=0.046, pad=0.04)
+        
+        # Hide unused subplots
+        for layer in range(num_layers, nrows * ncols):
+            row = layer // ncols
+            col = layer % ncols
+            axs[row, col].axis('off')
+        
+        plt.tight_layout()
+        plt.savefig(r'..\debug\radial_weights_sample.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close()
+
+    averaged_radial_tokens = np.array(averaged_radial_tokens)  # shape: (num_orientations, num_layers, feature_dim)
+    averaged_radial_tokens = np.transpose(averaged_radial_tokens, (1, 0, 2))  # shape: (num_layers, num_orientations, feature_dim)
+
+    return averaged_radial_tokens, radial_weights
 
 def _next_sample_id(results_dir: str) -> int:
     """Compute the next integer sample id based on existing files named like 'sample_#_... .png' or 'sample_#.png'."""

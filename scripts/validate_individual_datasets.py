@@ -126,26 +126,6 @@ if __name__ == '__main__':
         # Save median result for each dataset
         results[dataset_name] = np.median(delta_yaws)
 
-        # # Replot the histograms
-        # results_dir = os.path.join(r'..\results', config['output_dir'])
-        # if not os.path.exists(results_dir):
-        #     os.makedirs(results_dir)
-        # with open(os.path.join(results_dir, 'delta_yaws.pkl'), 'rb') as f:
-        #     delta_yaws = pickle.load(f)
-        # error_mean = np.mean(delta_yaws)
-        # error_std = np.std(delta_yaws)
-        # error_median = np.median(delta_yaws)
-        # plt.figure(figsize=(10, 6))
-        # plt.hist(delta_yaws, bins=50, edgecolor='black', alpha=0.7)
-        # plt.xlabel('Absolute Orientation Error (degrees)', fontsize=12)
-        # plt.ylabel('Frequency', fontsize=12)
-        # plt.title(f'Orientation Error Distribution - {config['dataset']}\n' +
-        #         f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, Std: {error_std:.2f}°',
-        #         fontsize=14)
-        # plt.grid(True, alpha=0.3)
-        # plt.tight_layout()
-        # plt.savefig(os.path.join(results_dir, 'delta_yaws_hist.png'), dpi=300, bbox_inches='tight')
-
     # Stop timer
     total_time = time.time() - start_time
     print(f"\n=== Completed validation on all datasets in {total_time/60:.2f} minutes ===")
