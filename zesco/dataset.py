@@ -210,13 +210,15 @@ def polar_transform(image, target_size):
 
 
 class PairedImagesDataset(Dataset):
-    def __init__(self, filenames, transform_aerial=None, transform_ground=None, cutout_from_pano=True, apply_polar_transform=False, image_size=224):
+    def __init__(self, filenames, transform_aerial=None, transform_ground=None, cutout_from_pano=True, apply_polar_transform=False, image_size=224, fov_x=90, fov_y=180):
         self.filenames = filenames
         self.transform_aerial = transform_aerial
         self.transform_ground = transform_ground
         self.cutout_from_pano = cutout_from_pano
         self.apply_polar_transform = apply_polar_transform
         self.image_size = image_size
+        self.fov_x = fov_x
+        self.fov_y = fov_y
 
     def __len__(self):
         return len(self.filenames)
@@ -228,7 +230,7 @@ class PairedImagesDataset(Dataset):
         aerial_image = Image.open(aerial_img_path).convert('RGB')
 
         # Choose Cropping Parameters
-        fov = (90, 180)                 # default FOV
+        fov = (self.fov_x, self.fov_y)  # set fov
         yaw = random.randint(0, 360)    # random yaw between 0 and 360 degrees
         pitch = 90                      # fixed pitch at 90 degrees
 
@@ -263,49 +265,82 @@ def get_transforms(processor, image_size, aerial_scaling, crop_percentage=0.25):
         processor_ground = processor
         processor_aerial = processor
 
-    # transform_ground = transforms.Compose([
-    #     transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-    #     transforms.ToTensor(),
-    #     transforms.Normalize(
-    #         mean=processor_ground.image_mean,
-    #         std=processor_ground.image_std
-    #     )
-    # ])
+    # Check if CLIP-style processor or ViT-style processor
+    is_clip_processor = hasattr(processor_ground, 'image_processor')
+    
+    if is_clip_processor:
+        # CLIP processors
+        mean_ground = processor_ground.image_processor.image_mean
+        std_ground = processor_ground.image_processor.image_std
+        mean_aerial = processor_aerial.image_processor.image_mean
+        std_aerial = processor_aerial.image_processor.image_std
+    else:
+        # ViT processors (DinoV2, DinoV3)
+        mean_ground = processor_ground.image_mean
+        std_ground = processor_ground.image_std
+        mean_aerial = processor_aerial.image_mean
+        std_aerial = processor_aerial.image_std
 
-    # transform_ground = transforms.Compose([
-    #     transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-    #     transforms.Lambda(lambda img: transforms.functional.crop(img, int(img.size[1] * 0.15), 0, int(img.size[1] * 0.7), img.size[0])),
-    #     transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-    #     transforms.ToTensor(),
-    #     transforms.Normalize(
-    #         mean=processor_ground.image_mean,
-    #         std=processor_ground.image_std
-    #     )
-    # ])
+    # Ground transform - CLIP needs different resize strategy
+    if is_clip_processor:
+        # CLIP: resize shortest edge (maintains aspect ratio), then crop
+        # Note: We multiply by 255 after ToTensor() to match do_rescale=False behavior
+        if crop_percentage > 0:
+            transform_ground = transforms.Compose([
+                transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+                transforms.Lambda(lambda img: transforms.functional.crop(img, int(img.size[1] * crop_percentage), 0, int(img.size[1] * (1 - 2*crop_percentage)), img.size[0])),
+                transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+                transforms.CenterCrop(image_size),
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x * 255.0),  # Match do_rescale=False behavior
+                transforms.Normalize(mean=mean_ground, std=std_ground)
+            ])
+        else:
+            transform_ground = transforms.Compose([
+                transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+                transforms.CenterCrop(image_size),
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x * 255.0),  # Match do_rescale=False behavior
+                transforms.Normalize(mean=mean_ground, std=std_ground)
+            ])
+    else:
+        # ViT: direct resize to exact dimensions (can distort aspect ratio)
+        transform_ground = transforms.Compose([
+            transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.Lambda(lambda img: transforms.functional.crop(img, int(img.size[1] * crop_percentage), 0, int(img.size[1] * (1 - 2*crop_percentage)), img.size[0])),
+            transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean_ground, std=std_ground)
+        ])
 
-    transform_ground = transforms.Compose([
-        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-        transforms.Lambda(lambda img: transforms.functional.crop(img, int(img.size[1] * crop_percentage), 0, int(img.size[1] * (1 - 2*crop_percentage)), img.size[0])),
-        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=processor_ground.image_mean,
-            std=processor_ground.image_std
-        )
-    ])
-
-    transform_aerial = transforms.Compose([
-        transforms.Resize((image_size*aerial_scaling, image_size*aerial_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-        transforms.CenterCrop((image_size, image_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=processor_aerial.image_mean,
-                            std=processor_aerial.image_std)
-    ])
+    # Aerial transform
+    if is_clip_processor:
+        # CLIP: resize shortest edge, then center crop
+        # Note: We multiply by 255 after ToTensor() to match do_rescale=False behavior
+        transform_aerial = transforms.Compose([
+            transforms.Resize(image_size*aerial_scaling, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.CenterCrop((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: x * 255.0),  # Match do_rescale=False behavior
+            transforms.Normalize(mean=mean_aerial, std=std_aerial)
+        ])
+    else:
+        # ViT: direct resize
+        transform_aerial = transforms.Compose([
+            transforms.Resize((image_size*aerial_scaling, image_size*aerial_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.CenterCrop((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean_aerial, std=std_aerial)
+        ])
 
     return transform_ground, transform_aerial
 
 
 def denormalize(img_tensor, processor):
-    mean = torch.tensor(processor.image_mean).view(3, 1, 1).to(img_tensor.device)
-    std = torch.tensor(processor.image_std).view(3, 1, 1).to(img_tensor.device)
+    if hasattr(processor, 'image_processor'):
+        mean = torch.tensor(processor.image_processor.image_mean).view(3, 1, 1).to(img_tensor.device)
+        std = torch.tensor(processor.image_processor.image_std).view(3, 1, 1).to(img_tensor.device)
+    else:
+        mean = torch.tensor(processor.image_mean).view(3, 1, 1).to(img_tensor.device)
+        std = torch.tensor(processor.image_std).view(3, 1, 1).to(img_tensor.device)
     return img_tensor * std + mean

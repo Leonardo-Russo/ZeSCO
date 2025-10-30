@@ -381,10 +381,14 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
             ax = axs[row, col]
             
             # Plot weights heatmap
-            im = ax.imshow(vertical_weights_padded[:, layer, :].T, aspect='auto', cmap='viridis', interpolation='nearest', vmin=0, vmax=1, origin='lower')
+            im = ax.imshow(vertical_weights_padded[:, layer, :].T, aspect='auto', cmap='viridis', interpolation='nearest', vmin=0, vmax=1)
             ax.set_title(f'Layer {layer+1} Weights', fontsize=12, fontweight='bold')
             ax.set_xlabel('Vertical Line Index', fontsize=10)
             ax.set_ylabel('Token Index along Vertical Line', fontsize=10)
+            
+            # Reverse y-axis ticks
+            ax.set_yticks(range(max_tokens))
+            ax.set_yticklabels(range(max_tokens - 1, -1, -1))
             
             # Add colorbar
             plt.colorbar(im, ax=ax, label='Weight', fraction=0.046, pad=0.04)
@@ -626,6 +630,10 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_dim, sky_grid, dep
             tick_labels = [f'{int(angle)}°' for angle in np.linspace(0, 360, 9)]
             ax.set_xticks(tick_positions)
             ax.set_xticklabels(tick_labels, rotation=45)
+            
+            # Reverse y-axis ticks
+            ax.set_yticks(range(max_tokens))
+            ax.set_yticklabels(range(max_tokens - 1, -1, -1))
             
             # Add colorbar
             plt.colorbar(im, ax=ax, label='Weight', fraction=0.046, pad=0.04)

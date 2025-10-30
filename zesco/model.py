@@ -59,7 +59,7 @@ class CrossviewModel(nn.Module):
 
         elif backbone == 'clip':
 
-            self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16").to(self.device)
+            self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16")
             self.patch_size = 16
 
         elif backbone == "resnet50":
@@ -108,14 +108,13 @@ class CrossviewModel(nn.Module):
 
         return ground_patch_features_flat, aerial_patch_features_flat
 
-    def _forward_clip(self, ground_image, aerial_image, debug):
-
-        ground_inputs = self.processor(images=ground_image, return_tensors="pt", do_rescale=False)
-        aerial_inputs = self.processor(images=aerial_image, return_tensors="pt", do_rescale=False)
+    def _forward_clip(self, ground_input, aerial_input, debug):
 
         # Get the intermediate feature maps
-        ground_features = self.model.vision_model(pixel_values=ground_inputs["pixel_values"].to(self.device)).last_hidden_state.detach()
-        aerial_features = self.model.vision_model(pixel_values=aerial_inputs["pixel_values"].to(self.device)).last_hidden_state.detach()
+        # ground_features = self.model.vision_model(ground_input).last_hidden_state.detach()
+        # aerial_features = self.model.vision_model(aerial_input).last_hidden_state.detach()
+        ground_features = self.model.vision_model(ground_input).last_hidden_state
+        aerial_features = self.model.vision_model(aerial_input).last_hidden_state
 
         ground_tokens = ground_features[:, 1:, :]
         aerial_tokens = aerial_features[:, 1:, :]
@@ -211,8 +210,6 @@ class CrossviewModel(nn.Module):
             return self._forward_clip(ground_input, aerial_input, debug)
         elif self.backbone == 'dinov2':
             return self._forward_dinov2(ground_input, aerial_input, debug)
-        elif self.backbone == 'dinov2T':
-            return self._forward_dinov2T(ground_input, aerial_input, debug)
         elif self.backbone == 'resnet50':
             return self._forward_resnet50(ground_input, aerial_input, debug)
         elif self.backbone == 'dinov3':

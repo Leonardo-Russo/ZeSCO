@@ -24,8 +24,9 @@ DATASETS = ['AFR', 'AFU', 'ASR', 'ASU', 'EUR', 'EUU', 'NAR', 'NAU', 'SAR', 'SAU'
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test the ZeSCO model on individual datasets.')
     parser.add_argument('--backbone', type=str, default='dinov3', help='Model to use')
-    parser.add_argument('--num_layers', type=int, default=3, help='Number of layers in which to divide the image')
-    parser.add_argument('--crop_percentage', type=float, default=0.25, help='Percentage of the image to crop')
+    parser.add_argument('--num_layers', type=int, default=2, help='Number of layers in which to divide the image')
+    parser.add_argument('--crop_percentage', type=float, default=0.30, help='Percentage of the image to crop')
+    parser.add_argument('--fov', type=int, default=90, help='Horizontal Field of View for ground images')
     parser.add_argument('--loss', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--sample_percentage', type=float, default=0.2, help='Percentage of dataset to sample for testing')
     parser.add_argument('--threshold', type=float, default=0.4, help='Needed for the middleground weights')
@@ -59,6 +60,7 @@ if __name__ == '__main__':
         'output_dir': None,
         'backbone': args.backbone,
         'num_layers': args.num_layers,
+        'fov': args.fov,
         'loss': args.loss,
         'dataset': None,
         'crop_percentage': args.crop_percentage,
@@ -103,7 +105,7 @@ if __name__ == '__main__':
         generator.manual_seed(seed)
 
         # Initialize the dataset and dataloader
-        paired_dataset = PairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground, cutout_from_pano=True)
+        paired_dataset = PairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground, cutout_from_pano=True, fov_x=config['fov'])
         data_loader = DataLoader(
             paired_dataset, 
             batch_size=BATCH_SIZE, 
@@ -142,6 +144,7 @@ if __name__ == '__main__':
     error_mean = np.mean(global_delta_yaws)
     error_std = np.std(global_delta_yaws)
     error_median = np.median(global_delta_yaws)
+    print(f"\nOverall Delta Yaw Median Error: {error_median:.2f}°")
 
     # Show an histogram of the delta_yaw errors
     plt.figure(figsize=(10, 6))
