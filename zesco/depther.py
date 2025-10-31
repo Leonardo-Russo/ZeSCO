@@ -92,6 +92,6 @@ class DepthAnything(nn.Module):
             # plt.colorbar(dmg, ax=ax[2], fraction=0.046, pad=0.04)
             plt.tight_layout()
             plt.savefig(r'..\debug\depth_estimation.png', bbox_inches='tight', dpi=300)
-            plt.show()
+            plt.show(block=False)
 
         return depth_map, depth_map_grid

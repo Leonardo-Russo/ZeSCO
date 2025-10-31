@@ -182,7 +182,7 @@ class SkyFilter(nn.Module):
             ax4.axis('off')
             plt.tight_layout()
             plt.savefig(r'..\debug\sky_filter.png', bbox_inches='tight', dpi=300)
-            plt.show()
+            plt.show(block=False)
 
         return ground_image_no_sky, sky_mask, grid_mask
 

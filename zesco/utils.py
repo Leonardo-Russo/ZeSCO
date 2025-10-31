@@ -340,7 +340,7 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
             vertical_tokens, indices = get_direction_tokens(image_tokens, vertical_idx=i, grid_dim=grid_dim, sky_grid=sky_grid)
             if len(vertical_tokens) == 0:
                 vertical_weights.append(np.zeros((num_layers, 1)))
-                indices_weights.append(np.zeros((num_layers, 1)))
+                indices_weights.append([])
                 continue
             
             # Recompute weights for debugging (same logic as above)
@@ -364,21 +364,21 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
             vertical_weights.append(weights)
             indices_weights.append(indices)
 
-        # Pad weights to same size for visualization
-        max_tokens = max(w.shape[1] for w in vertical_weights)
-        # vertical_weights_padded = []
-        # for weights in vertical_weights:
-        #     padded = np.zeros((num_layers, max_tokens))
-        #     padded[:, :weights.shape[1]] = weights
-        vertical_weights_padded = []
-        for weights, indices in zip(vertical_weights, indices_weights):
-            padded = np.zeros((num_layers, max_tokens))
-            for layer in range(num_layers):
-                for idx, (y, x) in enumerate(indices):
-                    padded[layer, y] = weights[layer, idx]
-            vertical_weights_padded.append(padded)
-
-        vertical_weights_padded = np.array(vertical_weights_padded)  # shape: (grid_size, num_layers, max_tokens)
+        # Pad weights to same size for visualization - shape: (num_layers, grid_dim, max_tokens)
+        max_tokens = grid_dim  # maximum possible tokens is grid_dim (full vertical line)
+        vertical_weights_padded = np.zeros((num_layers, grid_dim, max_tokens))
+        
+        # Fill the padded array with weights at correct positions
+        for i in range(grid_dim):
+            indices = indices_weights[i]
+            weights = vertical_weights[i]  # shape: (num_layers, num_valid_tokens)
+            
+            if len(indices) > 0:
+                for layer in range(num_layers):
+                    for token_idx, (y, x) in enumerate(indices):
+                        # Place weight at y-position in the padded array
+                        vertical_weights_padded[layer, i, y] = weights[layer, token_idx]
+        
         
         # Create subplot grid
         ncols = min(num_layers, 3)  # Max 3 columns
@@ -391,7 +391,7 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
             ax = axs[row, col]
             
             # Plot weights heatmap
-            im = ax.imshow(vertical_weights_padded[:, layer, :].T, aspect='auto', cmap='viridis', interpolation='nearest', vmin=0, vmax=1)
+            im = ax.imshow(vertical_weights_padded[layer, :, :].T, aspect='auto', cmap='viridis', interpolation='nearest', vmin=0, vmax=1)
             ax.set_title(f'Layer {layer+1} Weights', fontsize=12, fontweight='bold')
             ax.set_xlabel('Vertical Line Index', fontsize=10)
             ax.set_ylabel('Token Index along Vertical Line', fontsize=10)
