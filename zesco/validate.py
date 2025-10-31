@@ -29,7 +29,6 @@ def validate(model, processors, data_loader, config):
     output_dir = config['output_dir']
     debug = config['debug']
     save_mode = config['save_mode']
-    threshold = config['threshold']
     debug = config['debug']
     num_layers = config['num_layers']
 
@@ -240,20 +239,29 @@ def validate(model, processors, data_loader, config):
     error_mean = np.mean(delta_yaws)
     error_std = np.std(delta_yaws)
     error_median = np.median(delta_yaws)
-    
+
+    # Compute recall at X degrees
+    recall_threshold = config['recall_k']   # degrees
+    recall = np.mean(delta_yaws <= recall_threshold) * 100  # Percentage of samples within threshold
+
     print(f"Mean Delta Yaw Error: {error_mean}")
     print(f"Standard Deviation of Delta Yaw Error: {error_std}")
     print(f"Median Delta Yaw Error: {error_median}")
+    print(f"Recall at {recall_threshold}°: {recall:.2f}%")
 
-    # Show an histogram of the delta_yaw errors
+    # Save recall to info.txt
+    with open(os.path.join(results_dir, 'info.txt'), 'a') as f:
+        f.write(f"Recall at {recall_threshold}°: {recall:.2f}%\n")
+
+    # Update histogram to show recall instead of standard deviation
     if save_mode in ['hist', 'all']:
         plt.figure(figsize=(10, 6))
         plt.hist(delta_yaws, bins=50, edgecolor='black', alpha=0.7)
         plt.xlabel('Absolute Orientation Error (degrees)', fontsize=12)
         plt.ylabel('Frequency', fontsize=12)
         plt.title(f'Orientation Error Distribution - {config['dataset']}\n' +
-                f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, Std: {error_std:.2f}°',
-                fontsize=14)
+                  f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, Recall at {recall_threshold}°: {recall:.2f}',
+                  fontsize=14)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.savefig(os.path.join(results_dir, 'delta_yaws_hist.png'), dpi=300, bbox_inches='tight')

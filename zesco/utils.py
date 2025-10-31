@@ -335,10 +335,12 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
     if debug:   # show the weights computed
         # Only collect weights for debugging when needed
         vertical_weights = []
+        indices_weights = []
         for i in range(grid_dim):
             vertical_tokens, indices = get_direction_tokens(image_tokens, vertical_idx=i, grid_dim=grid_dim, sky_grid=sky_grid)
             if len(vertical_tokens) == 0:
                 vertical_weights.append(np.zeros((num_layers, 1)))
+                indices_weights.append(np.zeros((num_layers, 1)))
                 continue
             
             # Recompute weights for debugging (same logic as above)
@@ -360,14 +362,22 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
                     weights_middle.append(mth_weights / np.sum(mth_weights))
                 weights = np.stack([weights_fore, *weights_middle, weights_back])
             vertical_weights.append(weights)
+            indices_weights.append(indices)
 
         # Pad weights to same size for visualization
         max_tokens = max(w.shape[1] for w in vertical_weights)
+        # vertical_weights_padded = []
+        # for weights in vertical_weights:
+        #     padded = np.zeros((num_layers, max_tokens))
+        #     padded[:, :weights.shape[1]] = weights
         vertical_weights_padded = []
-        for weights in vertical_weights:
+        for weights, indices in zip(vertical_weights, indices_weights):
             padded = np.zeros((num_layers, max_tokens))
-            padded[:, :weights.shape[1]] = weights
+            for layer in range(num_layers):
+                for idx, (y, x) in enumerate(indices):
+                    padded[layer, y] = weights[layer, idx]
             vertical_weights_padded.append(padded)
+
         vertical_weights_padded = np.array(vertical_weights_padded)  # shape: (grid_size, num_layers, max_tokens)
         
         # Create subplot grid

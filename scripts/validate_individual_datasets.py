@@ -29,6 +29,7 @@ if __name__ == '__main__':
     parser.add_argument('--fov', type=int, default=90, help='Horizontal Field of View for ground images')
     parser.add_argument('--loss', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--sample_percentage', type=float, default=0.2, help='Percentage of dataset to sample for testing')
+    parser.add_argument('--recall_k', type=int, default=5, help='K value for Recall@K calculation')
     parser.add_argument('--threshold', type=float, default=0.4, help='Needed for the middleground weights')
     parser.add_argument('--main_output_dir', type=str, default=r'..\results\individual_untitled', help='Directory to save output files')
     parser.add_argument('--save_mode', type=str, default='hist', choices=['all', 'hist'], help='Save only the combined 2x2 figure, only the 4 separate figures, or both')
@@ -39,7 +40,7 @@ if __name__ == '__main__':
     image_size = 224
     aerial_scaling = 2
     BATCH_SIZE = 8
-    seed = 42
+    seed = 43
 
     # Set seed
     random.seed(seed)
@@ -65,8 +66,10 @@ if __name__ == '__main__':
         'dataset': None,
         'crop_percentage': args.crop_percentage,
         'sample_percentage': args.sample_percentage,
+        'recall_k': args.recall_k,
         'save_mode': args.save_mode,
-        'debug': args.debug,
+        # 'debug': args.debug,
+        'debug': True,
         'threshold': args.threshold,
         'image_size': image_size,
         'aerial_scaling': aerial_scaling,
