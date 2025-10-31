@@ -33,6 +33,7 @@ if __name__ == '__main__':
     parser.add_argument('--threshold', type=float, default=0.4, help='Needed for the middleground weights')
     parser.add_argument('--main_output_dir', type=str, default=r'..\results\individual_untitled', help='Directory to save output files')
     parser.add_argument('--save_mode', type=str, default='hist', choices=['all', 'hist'], help='Save only the combined 2x2 figure, only the 4 separate figures, or both')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--debug', action='store_true', help='Debug mode')
     args = parser.parse_args()
 
@@ -40,7 +41,7 @@ if __name__ == '__main__':
     image_size = 224
     aerial_scaling = 2
     BATCH_SIZE = 8
-    seed = 43
+    seed = args.seed
 
     # Set seed
     random.seed(seed)
@@ -68,15 +69,14 @@ if __name__ == '__main__':
         'sample_percentage': args.sample_percentage,
         'recall_k': args.recall_k,
         'save_mode': args.save_mode,
-        # 'debug': args.debug,
-        'debug': True,
+        'debug': args.debug,
         'threshold': args.threshold,
         'image_size': image_size,
         'aerial_scaling': aerial_scaling,
         'batch_size': BATCH_SIZE,
         'device': device,
         'grid_size': grid_size,
-        'seed': 42,
+        'seed': args.seed,
         'main_output_dir': os.path.join(r'..\results', args.main_output_dir)
     }
 

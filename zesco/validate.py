@@ -29,7 +29,6 @@ def validate(model, processors, data_loader, config):
     output_dir = config['output_dir']
     debug = config['debug']
     save_mode = config['save_mode']
-    debug = config['debug']
     num_layers = config['num_layers']
 
     # Create results directory and retrieve batch size
@@ -151,7 +150,7 @@ def validate(model, processors, data_loader, config):
                     print("averaged radial tokens: ", radial_averaged_tokens.shape)
 
                 if debug:
-                    return
+                    return 0
 
                 # Find the best alignment
                 best_orientation, distances, min_distance, confidence = find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_dim, fov_x_i, debug=False)

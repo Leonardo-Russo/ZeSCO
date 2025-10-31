@@ -213,17 +213,21 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
         
         feature_dim = image_tokens.shape[1]
         
-        # Prepare padded tensors
+        # Prepare padded tensors - use grid_dim as max_tokens since that's the full vertical line
+        max_tokens = grid_dim
         tokens_padded = np.zeros((grid_dim, max_tokens, feature_dim), dtype=np.float32)
         depth_padded = np.zeros((grid_dim, max_tokens), dtype=np.float32)
         mask = np.zeros((grid_dim, max_tokens), dtype=np.float32)
         
+        # Fill padded arrays at correct y-positions (not sequentially)
         for i, (vt, indices) in enumerate(all_vertical_data):
             if len(vt) > 0:
-                tokens_padded[i, :len(vt), :] = vt
                 depth_values = np.array([depth_map_grid[y, x] for (y, x) in indices], dtype=np.float32)
-                depth_padded[i, :len(vt)] = depth_values
-                mask[i, :len(vt)] = 1.0
+                for token_idx, (y, x) in enumerate(indices):
+                    # Place token and depth at y-position (not sequential)
+                    tokens_padded[i, y, :] = vt[token_idx]
+                    depth_padded[i, y] = depth_values[token_idx]
+                    mask[i, y] = 1.0
         
         # Move to GPU
         tokens_gpu = torch.from_numpy(tokens_padded).to(DEVICE)  # (grid_size, max_tokens, feature_dim)
