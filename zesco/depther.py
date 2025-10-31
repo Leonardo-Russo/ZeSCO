@@ -7,11 +7,12 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 class DepthAnything(nn.Module):
 
-    def __init__(self, grid_size: tuple = (16, 16)):
+    def __init__(self, grid_size: tuple = (16, 16), normalize_depth: bool = True):
         super(DepthAnything, self).__init__()
         self.image_processor = AutoImageProcessor.from_pretrained("LiheYoung/depth-anything-small-hf", use_fast=True)
         self.model = AutoModelForDepthEstimation.from_pretrained("LiheYoung/depth-anything-small-hf")
         self.grid_size = grid_size
+        self.normalize_depth = normalize_depth
 
     def forward(self, image, debug=False):
         """
@@ -52,11 +53,11 @@ class DepthAnything(nn.Module):
         # Convert the tensor to a NumPy array and remove extra dimensions
         depth_map = prediction.squeeze().cpu().numpy()
 
-        # Normalize the depth map to the range [0, 1]
-        depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
-        
-        # Ensure values are exactly within [0, 1] range
-        depth_map = np.clip(depth_map, 0.0, 1.0)
+        # Normalize the depth map to the range [0, 1] if flag is set
+        if self.normalize_depth:
+            depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
+            # Ensure values are exactly within [0, 1] range
+            depth_map = np.clip(depth_map, 0.0, 1.0)
 
         # Calculate the size of each grid cell
         cell_height = height // self.grid_size[0]
@@ -73,8 +74,15 @@ class DepthAnything(nn.Module):
 
                 # Calculate the average depth value in the cell
                 cell_depth = depth_map[start_y:end_y, start_x:end_x]
-                # Ensure the mean value is also properly clipped
-                depth_map_grid[i, j] = np.clip(np.mean(cell_depth), 0.0, 1.0)
+                depth_map_grid[i, j] = np.mean(cell_depth)
+
+        # Re-normalize depth_map_grid to [0, 1] if normalization is enabled
+        if self.normalize_depth:
+            grid_min = depth_map_grid.min()
+            grid_max = depth_map_grid.max()
+            if grid_max > grid_min:
+                depth_map_grid = (depth_map_grid - grid_min) / (grid_max - grid_min)
+            depth_map_grid = np.clip(depth_map_grid, 0.0, 1.0)
 
         # Visualize the depth map and downsampled depth map grid if in debug mode
         if debug:
