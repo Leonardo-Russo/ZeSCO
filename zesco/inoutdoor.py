@@ -20,7 +20,7 @@ class IndoorOutdoorClassifier(nn.Module):
         if isinstance(image, torch.Tensor):
             inputs = {"pixel_values": image}
         else:
-            inputs = self.processor(images=image, return_tensors="pt")
+            inputs = self.processor(images=image, return_tensors="pt").to(self.model.device)
 
         with torch.no_grad():
             outputs = self.model(**inputs)

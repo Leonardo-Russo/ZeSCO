@@ -299,7 +299,7 @@ class PairedImagesDataset(Dataset):
         return ground_image, aerial_image, fov, yaw, pitch
     
 
-def get_transforms(processor, image_size, aerial_scaling, crop_percentage=0.25):
+def get_transforms(processor, image_size, aerial_scaling, crop_percentage=0.25, horizontal_scaling=1.0):
         
     if isinstance(processor, tuple):
         processor_ground, processor_aerial = processor
@@ -327,30 +327,21 @@ def get_transforms(processor, image_size, aerial_scaling, crop_percentage=0.25):
     if is_clip_processor:
         # CLIP: resize shortest edge (maintains aspect ratio), then crop
         # Note: We multiply by 255 after ToTensor() to match do_rescale=False behavior
-        if crop_percentage > 0:
-            transform_ground = transforms.Compose([
-                transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-                transforms.Lambda(lambda img: transforms.functional.crop(img, int(img.size[1] * crop_percentage), 0, int(img.size[1] * (1 - 2*crop_percentage)), img.size[0])),
-                transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-                transforms.CenterCrop(image_size),
-                transforms.ToTensor(),
-                transforms.Lambda(lambda x: x * 255.0),  # Match do_rescale=False behavior
-                transforms.Normalize(mean=mean_ground, std=std_ground)
-            ])
-        else:
-            transform_ground = transforms.Compose([
-                transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-                transforms.CenterCrop(image_size),
-                transforms.ToTensor(),
-                transforms.Lambda(lambda x: x * 255.0),  # Match do_rescale=False behavior
-                transforms.Normalize(mean=mean_ground, std=std_ground)
-            ])
+        transform_ground = transforms.Compose([
+            transforms.Resize((image_size, image_size*horizontal_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.Lambda(lambda img: transforms.functional.crop(img, int(img.size[1] * crop_percentage), 0, int(img.size[1] * (1 - 2*crop_percentage)), img.size[0])),
+            transforms.Resize((image_size, image_size*horizontal_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.CenterCrop(image_size),
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: x * 255.0),  # Match do_rescale=False behavior
+            transforms.Normalize(mean=mean_ground, std=std_ground)
+        ])
     else:
         # ViT: direct resize to exact dimensions (can distort aspect ratio)
         transform_ground = transforms.Compose([
-            transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.Resize((image_size, image_size*horizontal_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
             transforms.Lambda(lambda img: transforms.functional.crop(img, int(img.size[1] * crop_percentage), 0, int(img.size[1] * (1 - 2*crop_percentage)), img.size[0])),
-            transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.Resize((image_size, image_size*horizontal_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
             transforms.ToTensor(),
             transforms.Normalize(mean=mean_ground, std=std_ground)
         ])
@@ -360,7 +351,7 @@ def get_transforms(processor, image_size, aerial_scaling, crop_percentage=0.25):
         # CLIP: resize shortest edge, then center crop
         # Note: We multiply by 255 after ToTensor() to match do_rescale=False behavior
         transform_aerial = transforms.Compose([
-            transforms.Resize(image_size*aerial_scaling, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.Resize((image_size*aerial_scaling, image_size*aerial_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
             transforms.CenterCrop((image_size, image_size)),
             transforms.ToTensor(),
             transforms.Lambda(lambda x: x * 255.0),  # Match do_rescale=False behavior

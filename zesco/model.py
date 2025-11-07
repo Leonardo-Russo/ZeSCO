@@ -30,11 +30,12 @@ warnings.simplefilter("ignore", category=UserWarning)
         
 
 class CrossviewModel(nn.Module):
-    def __init__(self, backbone='dinov2', frozen=True, device=None):
+    def __init__(self, backbone='dinov2', frozen=True, fov=90):
         super(CrossviewModel, self).__init__()
 
         self.backbone = backbone
         self.pretrained = frozen
+        self.fov = fov
 
         if backbone == "dinov2":
             
@@ -266,10 +267,9 @@ class CrossviewModel(nn.Module):
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
         return normalized_tokens
     
-    def show_tokens(self, imgs_tokens, grid_shape=None, mode="show", results_path=None, dpi=300, return_tokens=False):
+    def show_tokens(self, imgs_tokens, grid_size, grid_shape=None, mode="show", results_path=None, dpi=300, return_tokens=False):
 
-        B, n, C = imgs_tokens.shape
-        n_patches = int(math.sqrt(n))
+        B, _, _ = imgs_tokens.shape
 
         if return_tokens:
             out = []
@@ -290,7 +290,7 @@ class CrossviewModel(nn.Module):
             
             ax.axis('off')
 
-            vis_tokens = self.get_embedding_visualization(img_tokens, (n_patches, n_patches))
+            vis_tokens = self.get_embedding_visualization(img_tokens, grid_size=grid_size)
             out.append(vis_tokens) if return_tokens else None
             ax.imshow(vis_tokens)
 

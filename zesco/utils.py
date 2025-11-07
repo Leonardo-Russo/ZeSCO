@@ -34,7 +34,7 @@ USE_GPU = torch.cuda.is_available()
 print(f"Running on: {DEVICE} | GPU Acceleration: {USE_GPU}")
 
 
-def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_dim=16, sky_grid=None):
+def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=(14, 14), sky_grid=None):
     """
     Retrieves direction tokens and their corresponding indices based on the given angle or vertical index.
     Parameters:
@@ -53,12 +53,13 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_dim=16, sky
     - The function stops retrieving tokens if they are out of bounds.
     """
     if sky_grid is None:
-        sky_grid = np.ones((grid_dim, grid_dim))  # default to all ground if no sky_grid provided
+        sky_grid = np.ones(grid_size)  # default to all ground if no sky_grid provided
     
     if angle is not None:  # Radial direction
-        center = (grid_dim // 2, grid_dim // 2)
+        center = (grid_size[0] // 2, grid_size[1] // 2)
         direction_tokens = []
         indices = []
+        grid_dim = grid_size[0]  if grid_size[0] == grid_size[1] else ValueError("Grid size must be square for radial token extraction.")
         for r in range(grid_dim):
             x = round(center[0] + r * np.cos(np.deg2rad(angle)))
             y = round(center[1] - r * np.sin(np.deg2rad(angle)))
@@ -77,12 +78,12 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_dim=16, sky
                 break  # out of bounds
         return np.array(direction_tokens), indices
     elif vertical_idx is not None:      # vertical line
-        direction_tokens = tokens[vertical_idx::grid_dim]  # extract each vertical line
+        direction_tokens = tokens[vertical_idx::grid_size[0]]  # extract each vertical line
 
         # Only grab valid tokens
         valid_tokens = []
         valid_indices = []
-        for i in range(grid_dim):
+        for i in range(grid_size[0]):  # loop over vertical positions
             y = i
             x = vertical_idx
             if sky_grid[y, x] == 1:  # 1 indicates ground, 0 indicates sky
@@ -95,59 +96,65 @@ def find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_
     Finds the alignment between averaged vertical tokens and averaged radial tokens.
     GPU-accelerated version with vectorized distance computation.
     Parameters:
-    - vertical_averaged_tokens (ndarray): A numpy array of shape (num_layers, grid_size, feature_dim)
+    - vertical_averaged_tokens (ndarray): A numpy array of shape (num_layers, num_vertical_lines, feature_dim)
     - radial_averaged_tokens (ndarray): A numpy array of shape (num_layers, num_orientations, feature_dim)
-    - grid_size (int): The size of the grid.
-    - image_span (float): The span of the image.
+    - grid_size (int or tuple): The size of the grid. If tuple (height, width), uses width for num_vertical_lines.
+    - image_span (float): The span of the image in degrees.
     Returns:
     - best_orientation (float): The best orientation in degrees.
     - distances (list): A list of distances for each orientation.
     - min_distance (float): The minimum distance.
     - confidence (float): The confidence score.
     """
-
-    angle_step = image_span / grid_size
+    
+    # Handle both int and tuple grid_size
+    if isinstance(grid_size, tuple):
+        num_vertical_lines = grid_size[1]  # width (number of vertical lines)
+    else:
+        num_vertical_lines = grid_size
+    
+    angle_step = image_span / num_vertical_lines
     num_steps = int(round(360 / angle_step))
     
     if USE_GPU:
         # Convert to GPU tensors
-        vert_tokens_gpu = torch.from_numpy(vertical_averaged_tokens).to(DEVICE)  # (num_layers, grid_size, feature_dim)
+        vert_tokens_gpu = torch.from_numpy(vertical_averaged_tokens).to(DEVICE)  # (num_layers, num_vertical_lines, feature_dim)
         rad_tokens_gpu = torch.from_numpy(radial_averaged_tokens).to(DEVICE)     # (num_layers, num_orientations, feature_dim)
         
         num_orientations = rad_tokens_gpu.shape[1]
         
         # Vectorized index computation for all orientations and grid positions at once
-        # Shape: (num_steps, grid_size)
+        # Shape: (num_steps, num_vertical_lines)
         j_indices = torch.arange(num_steps, device=DEVICE).unsqueeze(1)  # (num_steps, 1)
-        i_indices = torch.arange(grid_size, device=DEVICE).unsqueeze(0)  # (1, grid_size)
+        i_indices = torch.arange(num_vertical_lines, device=DEVICE).unsqueeze(0)  # (1, num_vertical_lines)
         
         # Compute radial indices for all (orientation, position) pairs
-        rad_indices = (j_indices + i_indices - grid_size // 2) % num_orientations  # (num_steps, grid_size)
+        rad_indices = (j_indices + i_indices - num_vertical_lines // 2) % num_orientations  # (num_steps, num_vertical_lines)
         
         # Compute vertical indices for all positions
-        vert_indices = (grid_size - 1) - i_indices  # (1, grid_size)
+        vert_indices = (num_vertical_lines - 1) - i_indices  # (1, num_vertical_lines)
         
         # Gather tokens efficiently
         # rad_tokens_gpu: (num_layers, num_orientations, feature_dim)
-        # We need: (num_steps, grid_size, num_layers, feature_dim)
-        rad_gathered = rad_tokens_gpu[:, rad_indices, :]  # (num_layers, num_steps, grid_size, feature_dim)
-        rad_gathered = rad_gathered.permute(1, 2, 0, 3)   # (num_steps, grid_size, num_layers, feature_dim)
+        # We need: (num_steps, num_vertical_lines, num_layers, feature_dim)
+        rad_gathered = rad_tokens_gpu[:, rad_indices, :]  # (num_layers, num_steps, num_vertical_lines, feature_dim)
+        rad_gathered = rad_gathered.permute(1, 2, 0, 3)   # (num_steps, num_vertical_lines, num_layers, feature_dim)
         
-        # vert_tokens_gpu: (num_layers, grid_size, feature_dim)
-        vert_gathered = vert_tokens_gpu[:, vert_indices, :]  # (num_layers, 1, grid_size, feature_dim)
-        vert_gathered = vert_gathered.squeeze(1).permute(1, 0, 2)  # (grid_size, num_layers, feature_dim)
-        vert_gathered = vert_gathered.unsqueeze(0).expand(num_steps, -1, -1, -1)  # (num_steps, grid_size, num_layers, feature_dim)
+        # vert_tokens_gpu: (num_layers, num_vertical_lines, feature_dim)
+        vert_gathered = vert_tokens_gpu[:, vert_indices, :]  # (num_layers, 1, num_vertical_lines, feature_dim)
+        vert_gathered = vert_gathered.squeeze(1).permute(1, 0, 2)  # (num_vertical_lines, num_layers, feature_dim)
+        vert_gathered = vert_gathered.unsqueeze(0).expand(num_steps, -1, -1, -1)  # (num_steps, num_vertical_lines, num_layers, feature_dim)
         
         # Compute cosine similarity losses in batch
         # Normalize
         rad_norm = torch.nn.functional.normalize(rad_gathered, p=2, dim=-1)
         vert_norm = torch.nn.functional.normalize(vert_gathered, p=2, dim=-1)
         
-        # Cosine similarity: (num_steps, grid_size, num_layers)
+        # Cosine similarity: (num_steps, num_vertical_lines, num_layers)
         cos_sim = (rad_norm * vert_norm).sum(dim=-1)
         
         # Convert to distance (1 - cosine similarity) and average over layers and grid
-        distances_per_layer = 1 - cos_sim  # (num_steps, grid_size, num_layers)
+        distances_per_layer = 1 - cos_sim  # (num_steps, num_vertical_lines, num_layers)
         cone_distances = distances_per_layer.mean(dim=2).mean(dim=1)  # (num_steps,)
         
         # Convert back to CPU for final operations
@@ -168,14 +175,14 @@ def find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_
         
         for j, beta in enumerate(np.linspace(0, 360 - angle_step, num_steps)):
             cone_distance = 0
-            for i in range(grid_size):
-                rad_idx = int(j + i - grid_size/2) % radial_averaged_tokens.shape[1]
+            for i in range(num_vertical_lines):
+                rad_idx = int(j + i - num_vertical_lines/2) % radial_averaged_tokens.shape[1]
                 rad_avg_tokens = radial_averaged_tokens[:, rad_idx, :]
-                vert_idx = (grid_size - 1) - i
+                vert_idx = (num_vertical_lines - 1) - i
                 vert_avg_tokens = vertical_averaged_tokens[:, vert_idx, :]
                 cone_distance += loss(vert_avg_tokens, rad_avg_tokens)
             
-            cone_distance /= grid_size
+            cone_distance /= num_vertical_lines
             if cone_distance < min_distance:
                 min_distance = cone_distance
                 best_orientation = beta
@@ -190,7 +197,7 @@ def find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_
 
     return best_orientation, distances, min_distance, confidence
 
-def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, depth_map_grid, num_layers=3, debug=False):
+def get_averaged_vertical_tokens(angle_step, image_tokens, grid_size, sky_grid, depth_map_grid, num_layers=3, debug=False):
 
     # Pre-compute midpoints outside the loop
     if num_layers >= 3:
@@ -200,24 +207,24 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
         # GPU-accelerated batch processing
         # First, collect all tokens and indices for all vertical lines
         all_vertical_data = []
-        for i in range(grid_dim):
-            vertical_tokens, indices = get_direction_tokens(image_tokens, vertical_idx=i, grid_dim=grid_dim, sky_grid=sky_grid)
-            all_vertical_data.append((vertical_tokens, indices))
+        for i in range(grid_size[1]):   # loop across vertical lines
+                vertical_tokens, indices = get_direction_tokens(image_tokens, vertical_idx=i, grid_size=grid_size, sky_grid=sky_grid)
+                all_vertical_data.append((vertical_tokens, indices))
         
         # Find max tokens for padding
         max_tokens = max(len(vt) for vt, _ in all_vertical_data)
         if max_tokens == 0:
             # All empty - return zeros
-            result = np.zeros((num_layers, grid_dim, image_tokens.shape[1]))
+            result = np.zeros((num_layers, grid_size[1], image_tokens.shape[1]))
             return result
         
         feature_dim = image_tokens.shape[1]
         
-        # Prepare padded tensors - use grid_dim as max_tokens since that's the full vertical line
-        max_tokens = grid_dim
-        tokens_padded = np.zeros((grid_dim, max_tokens, feature_dim), dtype=np.float32)
-        depth_padded = np.zeros((grid_dim, max_tokens), dtype=np.float32)
-        mask = np.zeros((grid_dim, max_tokens), dtype=np.float32)
+        # Prepare padded tensors - use grid_size[0] as max_tokens since that's the full vertical line height
+        max_tokens = grid_size[0]
+        tokens_padded = np.zeros((grid_size[1], max_tokens, feature_dim), dtype=np.float32)
+        depth_padded = np.zeros((grid_size[1], max_tokens), dtype=np.float32)
+        mask = np.zeros((grid_size[1], max_tokens), dtype=np.float32)
         
         # Fill padded arrays at correct y-positions (not sequentially)
         for i, (vt, indices) in enumerate(all_vertical_data):
@@ -230,23 +237,23 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
                     mask[i, y] = 1.0
         
         # Move to GPU
-        tokens_gpu = torch.from_numpy(tokens_padded).to(DEVICE)  # (grid_size, max_tokens, feature_dim)
-        depth_gpu = torch.from_numpy(depth_padded).to(DEVICE)    # (grid_size, max_tokens)
-        mask_gpu = torch.from_numpy(mask).to(DEVICE)             # (grid_size, max_tokens)
+        tokens_gpu = torch.from_numpy(tokens_padded).to(DEVICE)  # (grid_size[1], max_tokens, feature_dim)
+        depth_gpu = torch.from_numpy(depth_padded).to(DEVICE)    # (grid_size[1], max_tokens)
+        mask_gpu = torch.from_numpy(mask).to(DEVICE)             # (grid_size[1], max_tokens)
         
         # Compute weights on GPU for all vertical lines at once
         if num_layers == 1:
             # Equal weights
-            weights_gpu = mask_gpu / (mask_gpu.sum(dim=1, keepdim=True) + 1e-8)  # (grid_size, max_tokens)
-            weights_gpu = weights_gpu.unsqueeze(1)  # (grid_size, 1, max_tokens)
+            weights_gpu = mask_gpu / (mask_gpu.sum(dim=1, keepdim=True) + 1e-8)  # (grid_size[1], max_tokens)
+            weights_gpu = weights_gpu.unsqueeze(1)  # (grid_size[1], 1, max_tokens)
             
         elif num_layers == 2:
             # Foreground and background
-            weights_fore = depth_gpu * mask_gpu  # (grid_size, max_tokens)
+            weights_fore = depth_gpu * mask_gpu  # (grid_size[1], max_tokens)
             weights_fore = weights_fore / (weights_fore.sum(dim=1, keepdim=True) + 1e-8)
             weights_back = (1 - depth_gpu) * mask_gpu
             weights_back = weights_back / (weights_back.sum(dim=1, keepdim=True) + 1e-8)
-            weights_gpu = torch.stack([weights_fore, weights_back], dim=1)  # (grid_size, 2, max_tokens)
+            weights_gpu = torch.stack([weights_fore, weights_back], dim=1)  # (grid_size[1], 2, max_tokens)
             
         else:  # num_layers >= 3
             # Foreground and background
@@ -266,18 +273,18 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
                 mth_weights = mth_weights / (mth_weights.sum(dim=1, keepdim=True) + 1e-8)
                 all_weights.append(mth_weights)
             all_weights.append(weights_back)
-            weights_gpu = torch.stack(all_weights, dim=1)  # (grid_size, num_layers, max_tokens)
+            weights_gpu = torch.stack(all_weights, dim=1)  # (grid_size[1], num_layers, max_tokens)
         
-        # Batch matrix multiplication: (grid_size, num_layers, max_tokens) @ (grid_size, max_tokens, feature_dim)
-        # = (grid_size, num_layers, feature_dim)
+        # Batch matrix multiplication: (grid_size[1], num_layers, max_tokens) @ (grid_size[1], max_tokens, feature_dim)
+        # = (grid_size[1], num_layers, feature_dim)
         averaged_tokens_gpu = torch.bmm(
-            weights_gpu.view(grid_dim * num_layers, 1, max_tokens),
-            tokens_gpu.unsqueeze(1).expand(-1, num_layers, -1, -1).reshape(grid_dim * num_layers, max_tokens, feature_dim)
-        ).view(grid_dim, num_layers, feature_dim)
+            weights_gpu.view(grid_size[1] * num_layers, 1, max_tokens),
+            tokens_gpu.unsqueeze(1).expand(-1, num_layers, -1, -1).reshape(grid_size[1] * num_layers, max_tokens, feature_dim)
+        ).view(grid_size[1], num_layers, feature_dim)
         
         # Convert back to CPU and transpose
-        averaged_vertical_tokens = averaged_tokens_gpu.cpu().numpy()  # (grid_size, num_layers, feature_dim)
-        averaged_vertical_tokens = np.transpose(averaged_vertical_tokens, (1, 0, 2))  # (num_layers, grid_size, feature_dim)
+        averaged_vertical_tokens = averaged_tokens_gpu.cpu().numpy()  # (grid_size[1], num_layers, feature_dim)
+        averaged_vertical_tokens = np.transpose(averaged_vertical_tokens, (1, 0, 2))  # (num_layers, grid_size[1], feature_dim)
         
         # Clean up GPU memory
         del tokens_gpu, depth_gpu, mask_gpu, weights_gpu, averaged_tokens_gpu
@@ -290,8 +297,8 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
         # CPU fallback or debug mode - original implementation
         averaged_vertical_tokens = []
         
-        for i in range(grid_dim):  # loop across vertical lines
-            vertical_tokens, indices = get_direction_tokens(image_tokens, vertical_idx=i, grid_dim=grid_dim, sky_grid=sky_grid)
+        for i in range(grid_size[1]):  # loop across vertical lines
+            vertical_tokens, indices = get_direction_tokens(image_tokens, vertical_idx=i, grid_size=grid_size, sky_grid=sky_grid)
 
             if len(vertical_tokens) == 0:
                 # No valid tokens - create zero array
@@ -340,8 +347,8 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
         # Only collect weights for debugging when needed
         vertical_weights = []
         indices_weights = []
-        for i in range(grid_dim):
-            vertical_tokens, indices = get_direction_tokens(image_tokens, vertical_idx=i, grid_dim=grid_dim, sky_grid=sky_grid)
+        for i in range(grid_size[1]):  # loop across vertical lines
+            vertical_tokens, indices = get_direction_tokens(image_tokens, vertical_idx=i, grid_size=grid_size, sky_grid=sky_grid)
             if len(vertical_tokens) == 0:
                 vertical_weights.append(np.zeros((num_layers, 1)))
                 indices_weights.append([])
@@ -368,12 +375,12 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
             vertical_weights.append(weights)
             indices_weights.append(indices)
 
-        # Pad weights to same size for visualization - shape: (num_layers, grid_dim, max_tokens)
-        max_tokens = grid_dim  # maximum possible tokens is grid_dim (full vertical line)
-        vertical_weights_padded = np.zeros((num_layers, grid_dim, max_tokens))
+        # Pad weights to same size for visualization - shape: (num_layers, grid_size[1], max_tokens)
+        max_tokens = grid_size[0]  # maximum possible tokens is grid_size[0] (full vertical line height)
+        vertical_weights_padded = np.zeros((num_layers, grid_size[1], max_tokens))
         
         # Fill the padded array with weights at correct positions
-        for i in range(grid_dim):
+        for i in range(grid_size[1]):  # Loop over all vertical lines (width)
             indices = indices_weights[i]
             weights = vertical_weights[i]  # shape: (num_layers, num_valid_tokens)
             
@@ -395,7 +402,7 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
             ax = axs[row, col]
             
             # Plot weights heatmap
-            im = ax.imshow(vertical_weights_padded[layer, :, :].T, aspect='auto', cmap='viridis', interpolation='nearest', vmin=0, vmax=1)
+            im = ax.imshow(vertical_weights_padded[layer, :, :].T, cmap='viridis', vmin=0, vmax=1)
             ax.set_title(f'Layer {layer+1} Weights', fontsize=12, fontweight='bold')
             ax.set_xlabel('Vertical Line Index', fontsize=10)
             ax.set_ylabel('Token Index along Vertical Line', fontsize=10)
@@ -422,7 +429,7 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
     averaged_vertical_tokens = np.transpose(averaged_vertical_tokens, (1, 0, 2))  # shape: (num_layers, grid_size, feature_dim)
     return averaged_vertical_tokens
 
-def get_averaged_radial_tokens(angle_step, image_tokens, grid_dim, sky_grid, depth_map_grid, num_layers=3, debug=False):
+def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, depth_map_grid, num_layers=3, debug=False):
 
     # Pre-compute midpoints outside the loop
     if num_layers >= 3:
@@ -435,7 +442,7 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_dim, sky_grid, dep
         # First, collect all tokens and indices for all orientations
         all_radial_data = []
         for beta in np.arange(0, 360, angle_step):
-            radial_tokens, indices = get_direction_tokens(image_tokens, angle=beta, grid_dim=grid_dim)
+            radial_tokens, indices = get_direction_tokens(image_tokens, angle=beta, grid_size=grid_size)
             all_radial_data.append((radial_tokens, indices))
         
         # Find max tokens for padding
@@ -538,7 +545,7 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_dim, sky_grid, dep
         averaged_radial_tokens = []
         
         for beta in np.arange(0, 360, angle_step):
-            radial_tokens, indices = get_direction_tokens(image_tokens, angle=beta, grid_dim=grid_dim)
+            radial_tokens, indices = get_direction_tokens(image_tokens, angle=beta, grid_size=grid_size)
 
             if len(radial_tokens) == 0:
                 averaged_tokens = np.zeros((num_layers, image_tokens.shape[1]))
@@ -588,7 +595,7 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_dim, sky_grid, dep
         # Only collect weights for debugging when needed
         radial_weights = []
         for beta in np.arange(0, 360, angle_step):
-            radial_tokens, indices = get_direction_tokens(image_tokens, angle=beta, grid_dim=grid_dim)
+            radial_tokens, indices = get_direction_tokens(image_tokens, angle=beta, grid_size=grid_size)
             if len(radial_tokens) == 0:
                 radial_weights.append(np.zeros((num_layers, 1)))
                 continue

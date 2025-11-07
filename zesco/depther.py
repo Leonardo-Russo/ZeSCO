@@ -34,7 +34,7 @@ class DepthAnything(nn.Module):
         # Prepare image for the model
         inputs = self.image_processor(images=image, return_tensors="pt")
 
-        # Dimensions of the image
+        # Dimensions of the image (numpy shape is [height, width, channels])
         height, width = image.shape[:2]
 
         # Get the predicted depth
@@ -45,7 +45,7 @@ class DepthAnything(nn.Module):
         # Interpolate to the original image size
         prediction = torch.nn.functional.interpolate(
             predicted_depth.unsqueeze(1),
-            size=image.shape[:2][::-1],  # [width, height]
+            size=(height, width),  # [height, width]
             mode="bicubic",
             align_corners=False,
         )
