@@ -194,7 +194,7 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_dim, sky_grid, d
 
     # Pre-compute midpoints outside the loop
     if num_layers >= 3:
-        midpoints = np.linspace(0, 1, num_layers)[1:-1]  # exclude 0 and 1
+        midpoints = np.linspace(1, 0, num_layers)[1:-1]  # exclude 0 and 1
     
     if USE_GPU and not debug:
         # GPU-accelerated batch processing
@@ -426,7 +426,7 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_dim, sky_grid, dep
 
     # Pre-compute midpoints outside the loop
     if num_layers >= 3:
-        midpoints = np.linspace(0, 1, num_layers)[1:-1]  # exclude 0 and 1
+        midpoints = np.linspace(1, 0, num_layers)[1:-1]  # exclude 0 and 1
     
     num_orientations = int(360 / angle_step)
     

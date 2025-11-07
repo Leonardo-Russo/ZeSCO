@@ -259,7 +259,7 @@ def validate(model, processors, data_loader, config):
         plt.xlabel('Absolute Orientation Error (degrees)', fontsize=12)
         plt.ylabel('Frequency', fontsize=12)
         plt.title(f'Orientation Error Distribution - {config['dataset']}\n' +
-                  f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, Recall at {recall_threshold}°: {recall:.2f}',
+                  f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, r@{recall_threshold}°: {recall:.2f}',
                   fontsize=14)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()

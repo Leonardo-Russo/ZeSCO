@@ -27,11 +27,53 @@ def sample_cvusa_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, gr
         dataset_path (str): Path to the dataset root directory.
         sample_percentage (float): Percentage of the dataset to sample.
         split_ratio (float): Ratio to split the sampled data into training and validation sets.
+        groundtype (str): Type of ground images ('panos' or 'cutouts').
+        zoom_level (int): Zoom level for satellite images (default 19).
+        shortcut (bool): If True, limits the dataset to 10000 * sample_percentage images.
         
     Returns:
         train_filenames (list): List of training filenames (tuples of panorama and satellite image paths).
         val_filenames (list): List of validation filenames (tuples of panorama and satellite image paths).
     """
+
+    if 'CVUSA' in dataset_path:
+        # Read paired filenames from CSV files
+        train_csv = os.path.join(dataset_path, 'splits', 'train-19zl.csv')
+        val_csv = os.path.join(dataset_path, 'splits', 'val-19zl.csv')
+        
+        # Check if CSV files exist
+        if not os.path.exists(train_csv) or not os.path.exists(val_csv):
+            raise FileNotFoundError(f"CSV files not found. Expected files:\n{train_csv}\n{val_csv}")
+        
+        # Read training CSV
+        train_filenames = []
+        with open(train_csv, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(',')
+                if len(parts) >= 2:
+                    sat_path = os.path.join(dataset_path, parts[0])
+                    ground_path = os.path.join(dataset_path, parts[1])
+                    if os.path.exists(sat_path) and os.path.exists(ground_path):
+                        train_filenames.append((ground_path, sat_path))
+        
+        # Read validation CSV
+        val_filenames = []
+        with open(val_csv, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(',')
+                if len(parts) >= 2:
+                    sat_path = os.path.join(dataset_path, parts[0])
+                    ground_path = os.path.join(dataset_path, parts[1])
+                    if os.path.exists(sat_path) and os.path.exists(ground_path):
+                        val_filenames.append((ground_path, sat_path))
+        
+        return train_filenames, val_filenames
     
     if groundtype == 'panos':
         ground_dir = os.path.join(dataset_path, 'streetview', 'panos')

@@ -61,6 +61,7 @@ if __name__ == '__main__':
     config = {
         'output_dir': args.output_dir,
         'backbone': args.backbone,
+        'fov': args.fov,
         'loss': args.loss,
         'dataset': args.dataset,
         'num_layers': args.num_layers,
@@ -81,7 +82,10 @@ if __name__ == '__main__':
     # Get Dataset Images
     if config['dataset'].lower() == "cvglobal":
         dataset_path = r'D:\cross_view_localization_DSM\Data\CVGlobal'
-        train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=0.02, split_ratio=1, groundtype='panos')
+        paired_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=args.sample_percentage, split_ratio=1, groundtype='panos')
+    elif config['dataset'].lower() == "cvusa":
+        dataset_path = r'D:\cross_view_localization_DSM\Data\CVUSA'
+        _, paired_filenames = sample_cvusa_images(dataset_path, sample_percentage=args.sample_percentage, split_ratio=1, groundtype='panos')
 
     # Get the processor and transforms
     processors = get_processors(config['backbone'])
@@ -92,7 +96,7 @@ if __name__ == '__main__':
     generator.manual_seed(seed)
 
     # Initialize the dataset and dataloader
-    paired_dataset = PairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground, cutout_from_pano=True, fov_x=config['fov'])
+    paired_dataset = PairedImagesDataset(paired_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground, cutout_from_pano=True, fov_x=config['fov'])
     data_loader = DataLoader(
         paired_dataset, 
         batch_size=BATCH_SIZE, 

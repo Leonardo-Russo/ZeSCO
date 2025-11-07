@@ -278,7 +278,7 @@ class CrossviewModel(nn.Module):
             side = int(np.ceil(np.sqrt(B)))
             grid_shape = (side, side)
 
-        fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(grid_shape[1]*4, grid_shape[0]*4))
+        fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(grid_shape[1]*5, grid_shape[0]*5))
         if isinstance(axes, np.ndarray):
             axes = axes.flatten()
         else:

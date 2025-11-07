@@ -147,7 +147,9 @@ if __name__ == '__main__':
     error_mean = np.mean(global_delta_yaws)
     error_std = np.std(global_delta_yaws)
     error_median = np.median(global_delta_yaws)
+    recall_at_k = np.mean(global_delta_yaws <= args.threshold) * 100.0
     print(f"\nOverall Delta Yaw Median Error: {error_median:.2f}°")
+    print(f"Overall Recall@{args.threshold}: {recall_at_k:.2f}%")
 
     # Show an histogram of the delta_yaw errors
     plt.figure(figsize=(10, 6))
@@ -155,7 +157,7 @@ if __name__ == '__main__':
     plt.xlabel('Absolute Orientation Error (degrees)', fontsize=12)
     plt.ylabel('Frequency', fontsize=12)
     plt.title(f'Orientation Error Distribution - CVGlobal\n' +
-            f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, Std: {error_std:.2f}°',
+            f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, r@{args.threshold}: {recall_at_k:.2f}',
             fontsize=14)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -177,6 +179,7 @@ if __name__ == '__main__':
         f.write(f"Median Delta Yaw Error:     {np.median(global_delta_yaws):.4f}°\n")
         f.write(f"Minimum Delta Yaw Error:    {np.min(global_delta_yaws):.4f}°\n")
         f.write(f"Maximum Delta Yaw Error:    {np.max(global_delta_yaws):.4f}°\n")
+        f.write(f"Recall@{args.threshold}°:           {recall_at_k:.2f}%\n\n")
         f.write("\nMedian Delta Yaw Error by Dataset:\n")
         f.write("-" * 35 + "\n")
         for dataset_name in DATASETS:
