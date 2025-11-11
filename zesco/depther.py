@@ -103,3 +103,16 @@ class DepthAnything(nn.Module):
             plt.show(block=False)
 
         return depth_map, depth_map_grid
+    
+
+
+def get_radial_depth_map(grid_size):
+    """Generates a radial depth map for the given grid size."""
+    radial_coords_x = np.arange(grid_size[0]).astype(np.float32)
+    radial_coords_y = np.arange(grid_size[1]).astype(np.float32)
+    x_grid, y_grid = np.meshgrid(radial_coords_x, radial_coords_y, indexing='ij')
+    center_x = (grid_size[0] - 1) / 2
+    center_y = (grid_size[1] - 1) / 2
+    radial_dist = np.sqrt((x_grid - center_x) ** 2 + (y_grid - center_y) ** 2)
+    depth_map_grid_aerial = 1 - (radial_dist / radial_dist.max())
+    return depth_map_grid_aerial

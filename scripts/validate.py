@@ -25,6 +25,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_layers', type=int, default=2, help='Number of layers in which to divide the image')
     parser.add_argument('--crop_percentage', type=float, default=0.3, help='Percentage of the image to crop')
     parser.add_argument('--fov', type=int, default=90, help='Horizontal Field of View for ground images')
+    parser.add_argument('--image_size', type=int, default=224, help='Reference image square dimension')
     parser.add_argument('--loss', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--dataset', type=str, default='cvglobal', help='Dataset to use')
     parser.add_argument('--sample_percentage', type=float, default=0.02, help='Percentage of dataset to sample for testing')
@@ -35,10 +36,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Settings
-    image_size = 224
+    image_size = args.image_size
     aerial_scaling = 2
     BATCH_SIZE = 8
     seed = 42
+    horizontal_scaling = round(args.fov / 90.0) if args.fov >= 90 else 1.0
 
     # Set seed for reproducibility
     random.seed(seed)
@@ -53,8 +55,9 @@ if __name__ == '__main__':
 
     # Load the Model
     model = CrossviewModel(backbone=args.backbone, frozen=True).to(device)
-    grid_size = (image_size // model.patch_size, image_size // model.patch_size)
-    print(f"Model patch size: {model.patch_size}, grid size: {grid_size}")
+    grid_size_ground = (image_size // model.patch_size, image_size // model.patch_size * horizontal_scaling)
+    grid_size_aerial = (image_size // model.patch_size, image_size // model.patch_size)
+    print(f"Model patch size: {model.patch_size}, grid size ground: {grid_size_ground}, grid size aerial: {grid_size_aerial}")
     model.show()
 
     # Create config dictionary
@@ -62,6 +65,8 @@ if __name__ == '__main__':
         'output_dir': args.output_dir,
         'backbone': args.backbone,
         'fov': args.fov,
+        'horizontal_scaling': horizontal_scaling,
+        'image_size': image_size,
         'loss': args.loss,
         'dataset': args.dataset,
         'num_layers': args.num_layers,
@@ -74,7 +79,8 @@ if __name__ == '__main__':
         'aerial_scaling': aerial_scaling,
         'batch_size': BATCH_SIZE,
         'device': device,
-        'grid_size': grid_size,
+        'grid_size_ground': grid_size_ground,
+        'grid_size_aerial': grid_size_aerial,
         'seed': 42,
         'main_output_dir': r'..\results'
     }
@@ -89,7 +95,7 @@ if __name__ == '__main__':
 
     # Get the processor and transforms
     processors = get_processors(config['backbone'])
-    transform_ground, transform_aerial = get_transforms(processors, image_size, aerial_scaling, crop_percentage=args.crop_percentage)
+    transform_ground, transform_aerial = get_transforms(processors, image_size, aerial_scaling, crop_percentage=args.crop_percentage, horizontal_scaling=horizontal_scaling)
 
     # Create generator for reproducible DataLoader
     generator = torch.Generator()

@@ -27,6 +27,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_layers', type=int, default=2, help='Number of layers in which to divide the image')
     parser.add_argument('--crop_percentage', type=float, default=0.30, help='Percentage of the image to crop')
     parser.add_argument('--fov', type=int, default=90, help='Horizontal Field of View for ground images')
+    parser.add_argument('--image_size', type=int, default=224, help='Reference square image dimension')
     parser.add_argument('--loss', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--sample_percentage', type=float, default=0.2, help='Percentage of dataset to sample for testing')
     parser.add_argument('--recall_k', type=int, default=5, help='K value for Recall@K calculation')
@@ -38,10 +39,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Settings
-    image_size = 224
+    image_size = args.image_size
     aerial_scaling = 2
     BATCH_SIZE = 8
     seed = args.seed
+    horizontal_scaling = round(args.fov / 90.0) if args.fov >= 90 else 1.0
 
     # Set seed
     random.seed(seed)
@@ -53,8 +55,9 @@ if __name__ == '__main__':
 
     # Load the Model
     model = CrossviewModel(backbone=args.backbone, frozen=True).to(device)
-    grid_size = (image_size // model.patch_size, image_size // model.patch_size)
-    print(f"Model patch size: {model.patch_size}, grid size: {grid_size}")
+    grid_size_ground = (image_size // model.patch_size, image_size // model.patch_size * horizontal_scaling)
+    grid_size_aerial = (image_size // model.patch_size, image_size // model.patch_size)
+    print(f"Model patch size: {model.patch_size}, grid size ground: {grid_size_ground}, grid size aerial: {grid_size_aerial}")
     model.show()
 
     # Create config dictionary
@@ -63,6 +66,8 @@ if __name__ == '__main__':
         'backbone': args.backbone,
         'num_layers': args.num_layers,
         'fov': args.fov,
+        'horizontal_scaling': horizontal_scaling,
+        'image_size': image_size,
         'loss': args.loss,
         'dataset': None,
         'crop_percentage': args.crop_percentage,
@@ -75,14 +80,15 @@ if __name__ == '__main__':
         'aerial_scaling': aerial_scaling,
         'batch_size': BATCH_SIZE,
         'device': device,
-        'grid_size': grid_size,
+        'grid_size_ground': grid_size_ground,
+        'grid_size_aerial': grid_size_aerial,
         'seed': args.seed,
         'main_output_dir': os.path.join(r'..\results', args.main_output_dir)
     }
 
     # Get the processor and transforms
     processors = get_processors(args.backbone)
-    transform_ground, transform_aerial = get_transforms(processors, image_size, aerial_scaling, crop_percentage=args.crop_percentage)
+    transform_ground, transform_aerial = get_transforms(processors, image_size, aerial_scaling, crop_percentage=args.crop_percentage, horizontal_scaling=horizontal_scaling)
 
     # Loop through each dataset
     global_delta_yaws = []
@@ -142,26 +148,48 @@ if __name__ == '__main__':
     for dataset_name in DATASETS:
         print(f"{dataset_name}: {results[dataset_name]:.2f}°")
 
-    # Plot combined histogram
-    global_delta_yaws = np.array(global_delta_yaws)
-    error_mean = np.mean(global_delta_yaws)
-    error_std = np.std(global_delta_yaws)
-    error_median = np.median(global_delta_yaws)
-    recall_at_k = np.mean(global_delta_yaws <= args.threshold) * 100.0
+    # Compute metrics
+    delta_yaws = np.array(global_delta_yaws)
+    error_mean = np.mean(delta_yaws)
+    error_std = np.std(delta_yaws)
+    error_median = np.median(delta_yaws)
+    recall_at_k = np.mean(delta_yaws <= config['recall_k']) * 100.0
+
+    # Calculate metrics for directional errors
+    directional_errors = np.minimum(delta_yaws, 180 - delta_yaws)
+    dir_error_mean = np.mean(directional_errors)
+    dir_error_std = np.std(directional_errors)
+    dir_error_median = np.median(directional_errors)
+    tau_recall_at_k = np.mean(directional_errors <= config['recall_k']) * 100.0
+    
     print(f"\nOverall Delta Yaw Median Error: {error_median:.2f}°")
     print(f"Overall Recall@{args.threshold}: {recall_at_k:.2f}%")
 
     # Show an histogram of the delta_yaw errors
     plt.figure(figsize=(10, 6))
-    plt.hist(global_delta_yaws, bins=50, edgecolor='black', alpha=0.7)
-    plt.xlabel('Absolute Orientation Error (degrees)', fontsize=12)
+    plt.hist(delta_yaws, bins=50, edgecolor='black', alpha=0.7)
+    plt.xlabel('Delta Yaw (degrees)', fontsize=12)
     plt.ylabel('Frequency', fontsize=12)
-    plt.title(f'Orientation Error Distribution - CVGlobal\n' +
-            f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, r@{args.threshold}: {recall_at_k:.2f}',
+    plt.title(f'Delta Yaw Distribution - CVGlobal\n' +
+            r'$\tau$Mean: ' + f'{dir_error_mean:.2f}°, Median: {error_median:.2f}°, r@{config['recall_k']}: {recall_at_k:.2f}%',
             fontsize=14)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(os.path.join(config['main_output_dir'], 'delta_yaws_hist.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+    # Plot histogram for directional errors
+    plt.figure(figsize=(10, 6))
+    plt.hist(directional_errors, bins=50, edgecolor='black', alpha=0.7)
+    plt.xlabel('Directional Error (degrees)', fontsize=12)
+    plt.ylabel('Frequency', fontsize=12)
+    plt.title(f'Directional Error Distribution - CVGlobal\n' +
+            r'$\tau$Mean: ' + f'{dir_error_mean:.2f}°, Median: {dir_error_median:.2f}°, r@{config['recall_k']}: {recall_at_k:.2f}%',
+            fontsize=14)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(config['main_output_dir'], 'delta_yaws_hist.png'), dpi=300, bbox_inches='tight')
+    plt.close()
     
     # Save delta yaws to pickle file
     with open(os.path.join(config['main_output_dir'], 'delta_yaws.pkl'), 'wb') as f:

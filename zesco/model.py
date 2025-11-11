@@ -353,16 +353,17 @@ class CrossviewModel(nn.Module):
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
         return normalized_tokens
 
-    def get_combined_embedding_visualization(self, tokens1, tokens2, grid_size1, grid_size2, random_state=20):
+    def get_combined_embedding_visualization(self, tokens1, tokens2, grid_size1, grid_size2, random_state=20, debug=False):
         pca = PCA(n_components=3, random_state=random_state)
 
         token1_shape = tokens1.shape[0]
         combined_tokens = np.concatenate((tokens1, tokens2), axis=0)
         reduced_tokens = pca.fit_transform(combined_tokens.astype(np.float32))
 
-        print("tokens1.shape", tokens1.shape)
-        print("tokens2.shape", tokens2.shape)
-        print("reduced_tokens.shape", reduced_tokens.shape)
+        if debug:
+            print("tokens1.shape", tokens1.shape)
+            print("tokens2.shape", tokens2.shape)
+            print("reduced_tokens.shape", reduced_tokens.shape)
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
 
         rgbimg1 = normalized_tokens[0:token1_shape, :]
