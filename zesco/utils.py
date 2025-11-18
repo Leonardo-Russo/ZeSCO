@@ -56,13 +56,14 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=(14, 1
         sky_grid = np.ones(grid_size)  # default to all ground if no sky_grid provided
     
     if angle is not None:  # Radial direction
-        center = (grid_size[0] // 2, grid_size[1] // 2)
+        center_y = grid_size[0] // 2
+        center_x = grid_size[1] // 2
         direction_tokens = []
         indices = []
         grid_dim = grid_size[0]  if grid_size[0] == grid_size[1] else ValueError("Grid size must be square for radial token extraction.")
         for r in range(grid_dim):
-            x = round(center[0] + r * np.cos(np.deg2rad(angle)))
-            y = round(center[1] - r * np.sin(np.deg2rad(angle)))
+            x = round(center_x + r * np.cos(np.deg2rad(angle)))
+            y = round(center_y - r * np.sin(np.deg2rad(angle)))
             if 0 <= x < grid_dim and 0 <= y < grid_dim:
                 idx = y * grid_dim + x
                 if tokens is None:
@@ -375,6 +376,39 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_size, sky_grid, 
             vertical_weights.append(weights)
             indices_weights.append(indices)
 
+        # === VISUALIZATION 1: Grid Indices Sampled ===
+        fig_grid, ax_grid = plt.subplots(figsize=(8, 8))
+        grid_viz = np.full(grid_size, np.nan)  # Initialize with NaN for sky regions
+        
+        # Mark all sampled indices - normalize to [0, 1] for better color distribution
+        for i in range(grid_size[1]):
+            indices = indices_weights[i]
+            for (y, x) in indices:
+                grid_viz[y, x] = i / (grid_size[1] - 1) if grid_size[1] > 1 else 0.5  # Normalize to [0, 1]
+        
+        # Plot the grid with turbo colormap (supports unlimited distinct colors)
+        im_grid = ax_grid.imshow(grid_viz, cmap='turbo', interpolation='nearest', vmin=0, vmax=1)
+        ax_grid.set_title('Vertical Lines Sampled on Grid', fontsize=14, fontweight='bold')
+        ax_grid.set_xlabel('X Position (Vertical Line Index)', fontsize=11)
+        ax_grid.set_ylabel('Y Position (Token Index)', fontsize=11)
+        
+        # Add grid lines
+        for i in range(grid_size[0] + 1):
+            ax_grid.axhline(i - 0.5, color='gray', linewidth=0.5, alpha=0.3)
+        for j in range(grid_size[1] + 1):
+            ax_grid.axvline(j - 0.5, color='gray', linewidth=0.5, alpha=0.3)
+        
+        # Set ticks
+        ax_grid.set_xticks(range(grid_size[1]))
+        ax_grid.set_yticks(range(grid_size[0]))
+        
+        plt.colorbar(im_grid, ax=ax_grid, label='Vertical Line Index', fraction=0.046, pad=0.04)
+        plt.tight_layout()
+        plt.savefig(r'..\debug\vertical_grid_indices.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close()
+
+        # === VISUALIZATION 2: Weights Heatmap ===
         # Pad weights to same size for visualization - shape: (num_layers, grid_size[1], max_tokens)
         max_tokens = grid_size[0]  # maximum possible tokens is grid_size[0] (full vertical line height)
         vertical_weights_padded = np.zeros((num_layers, grid_size[1], max_tokens))
@@ -434,14 +468,15 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
     # Pre-compute midpoints outside the loop
     if num_layers >= 3:
         midpoints = np.linspace(1, 0, num_layers)[1:-1]  # exclude 0 and 1
-    
-    num_orientations = int(360 / angle_step)
+
+    num_radial_directions = int(round(360 / angle_step))
+    radial_angles = np.linspace(0, 360 - angle_step, num_radial_directions)
     
     if USE_GPU and not debug:
         # GPU-accelerated batch processing
         # First, collect all tokens and indices for all orientations
         all_radial_data = []
-        for beta in np.arange(0, 360, angle_step):
+        for beta in radial_angles:
             radial_tokens, indices = get_direction_tokens(image_tokens, angle=beta, grid_size=grid_size)
             all_radial_data.append((radial_tokens, indices))
         
@@ -544,7 +579,7 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
         # CPU fallback or debug mode - original implementation
         averaged_radial_tokens = []
         
-        for beta in np.arange(0, 360, angle_step):
+        for beta in radial_angles:
             radial_tokens, indices = get_direction_tokens(image_tokens, angle=beta, grid_size=grid_size)
 
             if len(radial_tokens) == 0:
@@ -594,10 +629,12 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
     if debug:   # show the weights computed
         # Only collect weights for debugging when needed
         radial_weights = []
-        for beta in np.arange(0, 360, angle_step):
+        radial_indices = []
+        for beta in radial_angles:
             radial_tokens, indices = get_direction_tokens(image_tokens, angle=beta, grid_size=grid_size)
             if len(radial_tokens) == 0:
                 radial_weights.append(np.zeros((num_layers, 1)))
+                radial_indices.append([])
                 continue
                 
             # Recompute weights for debugging (same logic as above)
@@ -619,7 +656,58 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
                     weights_middle.append(mth_weights / mth_weights.sum())
                 weights = np.stack([weights_fore, *weights_middle, weights_back])
             radial_weights.append(weights)
+            radial_indices.append(indices)
 
+        # === VISUALIZATION 1: Grid Indices Sampled ===
+        # Create multiple subplots to show different angle ranges
+        num_angle_samples = len(radial_indices)
+        sample_step = max(1, len(radial_indices) // num_angle_samples)
+        
+        ncols_grid = min(4, num_angle_samples)
+        nrows_grid = (num_angle_samples + ncols_grid - 1) // ncols_grid
+        fig_grid, axs_grid = plt.subplots(nrows_grid, ncols_grid, figsize=(3*ncols_grid, 3*nrows_grid), squeeze=False)
+        
+        for plot_idx in range(num_angle_samples):
+            angle_idx = plot_idx * sample_step
+            beta = angle_idx * angle_step
+            indices = radial_indices[angle_idx]
+            
+            row = plot_idx // ncols_grid
+            col = plot_idx % ncols_grid
+            ax = axs_grid[row, col]
+            
+            # Create grid visualization for this angle
+            grid_viz = np.zeros(grid_size)
+            for token_idx, (y, x) in enumerate(indices):
+                grid_viz[y, x] = token_idx + 1  # Color by distance from center
+            
+            # Plot
+            im = ax.imshow(grid_viz, cmap='plasma', interpolation='nearest')
+            ax.set_title(f'Radial Line @ {beta:.0f}°', fontsize=10, fontweight='bold')
+            ax.set_xlabel('X Position', fontsize=8)
+            ax.set_ylabel('Y Position', fontsize=8)
+            
+            # Add grid lines
+            for i in range(grid_size[0] + 1):
+                ax.axhline(i - 0.5, color='gray', linewidth=0.3, alpha=0.3)
+            for j in range(grid_size[1] + 1):
+                ax.axvline(j - 0.5, color='gray', linewidth=0.3, alpha=0.3)
+            
+            ax.set_xticks(range(0, grid_size[1], max(1, grid_size[1]//4)))
+            ax.set_yticks(range(0, grid_size[0], max(1, grid_size[0]//4)))
+        
+        # Hide unused subplots
+        for plot_idx in range(num_angle_samples, nrows_grid * ncols_grid):
+            row = plot_idx // ncols_grid
+            col = plot_idx % ncols_grid
+            axs_grid[row, col].axis('off')
+        
+        plt.tight_layout()
+        plt.savefig(r'..\debug\radial_grid_indices.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close()
+
+        # === VISUALIZATION 2: Weights Heatmap ===
         # Pad weights to same size for visualization
         max_tokens = max(w.shape[1] for w in radial_weights)
         radial_weights_padded = []
