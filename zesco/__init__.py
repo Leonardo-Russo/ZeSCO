@@ -1,6 +1,5 @@
 from .dataset import (
     sample_cvusa_images,
-    sample_cities_images,
     extract_cutout_from_360,
     polar_transform,
     PairedImagesDataset,
@@ -42,7 +41,6 @@ from .validate import validate
 __all__ = [
     # dataset.py
     "sample_cvusa_images",
-    "sample_cities_images",
     "extract_cutout_from_360",
     "polar_transform",
     "PairedImagesDataset",

@@ -7,11 +7,12 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 class DepthAnything(nn.Module):
 
-    def __init__(self, grid_size: tuple = (16, 16)):
+    def __init__(self, grid_size: tuple = (16, 16), normalize_depth: bool = True):
         super(DepthAnything, self).__init__()
         self.image_processor = AutoImageProcessor.from_pretrained("LiheYoung/depth-anything-small-hf", use_fast=True)
         self.model = AutoModelForDepthEstimation.from_pretrained("LiheYoung/depth-anything-small-hf")
         self.grid_size = grid_size
+        self.normalize_depth = normalize_depth
 
     def forward(self, image, debug=False):
         """
@@ -33,7 +34,7 @@ class DepthAnything(nn.Module):
         # Prepare image for the model
         inputs = self.image_processor(images=image, return_tensors="pt")
 
-        # Dimensions of the image
+        # Dimensions of the image (numpy shape is [height, width, channels])
         height, width = image.shape[:2]
 
         # Get the predicted depth
@@ -44,7 +45,7 @@ class DepthAnything(nn.Module):
         # Interpolate to the original image size
         prediction = torch.nn.functional.interpolate(
             predicted_depth.unsqueeze(1),
-            size=image.shape[:2][::-1],  # [width, height]
+            size=(height, width),  # [height, width]
             mode="bicubic",
             align_corners=False,
         )
@@ -52,11 +53,11 @@ class DepthAnything(nn.Module):
         # Convert the tensor to a NumPy array and remove extra dimensions
         depth_map = prediction.squeeze().cpu().numpy()
 
-        # Normalize the depth map to the range [0, 1]
-        depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
-        
-        # Ensure values are exactly within [0, 1] range
-        depth_map = np.clip(depth_map, 0.0, 1.0)
+        # Normalize the depth map to the range [0, 1] if flag is set
+        if self.normalize_depth:
+            depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
+            # Ensure values are exactly within [0, 1] range
+            depth_map = np.clip(depth_map, 0.0, 1.0)
 
         # Calculate the size of each grid cell
         cell_height = height // self.grid_size[0]
@@ -73,26 +74,45 @@ class DepthAnything(nn.Module):
 
                 # Calculate the average depth value in the cell
                 cell_depth = depth_map[start_y:end_y, start_x:end_x]
-                # Ensure the mean value is also properly clipped
-                depth_map_grid[i, j] = np.clip(np.mean(cell_depth), 0.0, 1.0)
+                depth_map_grid[i, j] = np.mean(cell_depth)
+
+        # Re-normalize depth_map_grid to [0, 1] if normalization is enabled
+        if self.normalize_depth:
+            grid_min = depth_map_grid.min()
+            grid_max = depth_map_grid.max()
+            if grid_max > grid_min:
+                depth_map_grid = (depth_map_grid - grid_min) / (grid_max - grid_min)
+            depth_map_grid = np.clip(depth_map_grid, 0.0, 1.0)
 
         # Visualize the depth map and downsampled depth map grid if in debug mode
         if debug:
-            plt.figure(figsize=(18, 8))
-            plt.subplot(131)
-            plt.imshow(image)
-            plt.title('Original Image')
-            plt.axis('off')
-            plt.subplot(132)
-            plt.imshow(depth_map, cmap='plasma')
-            plt.colorbar()
-            plt.title('Depth Map')
-            plt.axis('off')
-            plt.subplot(133)
-            plt.imshow(depth_map_grid, cmap='plasma')
-            plt.colorbar()
-            plt.title('Downsampled Depth Map (16x16 Grid)')
-            plt.axis('off')
-            plt.show()
+            fig, ax = plt.subplots(1, 3, figsize=(8, 5))
+            ax[0].imshow(image)
+            ax[0].set_title('Original Image', fontsize=12, fontweight='bold')
+            ax[0].axis('off')
+            dm = ax[1].imshow(depth_map, cmap='plasma', interpolation='nearest', vmin=0, vmax=1)
+            ax[1].set_title('Depth Map', fontsize=12, fontweight='bold')
+            ax[1].axis('off')
+            dmg = ax[2].imshow(depth_map_grid, cmap='plasma', interpolation='nearest', vmin=0, vmax=1)
+            ax[2].set_title('Depth Map Grid', fontsize=12, fontweight='bold')
+            ax[2].axis('off')
+            # plt.colorbar(dm, ax=ax[1], fraction=0.046, pad=0.04)
+            # plt.colorbar(dmg, ax=ax[2], fraction=0.046, pad=0.04)
+            plt.tight_layout()
+            plt.savefig(r'..\debug\depth_estimation.png', bbox_inches='tight', dpi=300)
+            plt.show(block=False)
 
         return depth_map, depth_map_grid
+    
+
+
+def get_radial_depth_map(grid_size):
+    """Generates a radial depth map for the given grid size."""
+    radial_coords_x = np.arange(grid_size[0]).astype(np.float32)
+    radial_coords_y = np.arange(grid_size[1]).astype(np.float32)
+    x_grid, y_grid = np.meshgrid(radial_coords_x, radial_coords_y, indexing='ij')
+    center_x = (grid_size[0] - 1) / 2
+    center_y = (grid_size[1] - 1) / 2
+    radial_dist = np.sqrt((x_grid - center_x) ** 2 + (y_grid - center_y) ** 2)
+    depth_map_grid_aerial = 1 - (radial_dist / radial_dist.max())
+    return depth_map_grid_aerial

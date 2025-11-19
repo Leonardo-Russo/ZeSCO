@@ -9,7 +9,7 @@ import pickle
 import random
 import json
 
-from zesco.dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images, get_transforms, denormalize
+from zesco.dataset import PairedImagesDataset, sample_cvusa_images, get_transforms, denormalize
 from zesco.model import CrossviewModel, CosineSimilarityLoss, CosineSimilarityLossCustom, get_processors
 from zesco.utils import get_averaged_vertical_tokens, get_averaged_radial_tokens, find_alignment, _next_sample_id, _save_separate_figures
 from zesco.skyfilter import SkyFilter
@@ -25,11 +25,12 @@ def validate(model, processors, data_loader, config):
 
     # Retrieve settings from config
     device = config['device']
-    grid_size = config['grid_size']
+    grid_size_ground = config['grid_size_ground']
+    grid_size_aerial = config['grid_size_aerial']
     output_dir = config['output_dir']
     debug = config['debug']
     save_mode = config['save_mode']
-    threshold = config['threshold']
+    num_layers = config['num_layers']
 
     # Create results directory and retrieve batch size
     results_dir = os.path.join(config['main_output_dir'], output_dir)
@@ -49,8 +50,17 @@ def validate(model, processors, data_loader, config):
         raise ValueError('The loss provided is not implemented.')
 
     # Initialize the Sky Filter and DepthAnything
-    sky_filter = SkyFilter(grid_size=grid_size)
-    depth_anything = DepthAnything(grid_size=grid_size)
+    sky_filter = SkyFilter(grid_size=grid_size_ground)
+    depth_anything = DepthAnything(grid_size=grid_size_ground)
+
+    # Create aerial depth map grid using numpy
+    radial_coords_x = np.arange(grid_size_aerial[0]).astype(np.float32)
+    radial_coords_y = np.arange(grid_size_aerial[1]).astype(np.float32)
+    x_grid, y_grid = np.meshgrid(radial_coords_x, radial_coords_y, indexing='ij')
+    center_x = (grid_size_aerial[0] - 1) / 2
+    center_y = (grid_size_aerial[1] - 1) / 2
+    radial_dist = np.sqrt((x_grid - center_x) ** 2 + (y_grid - center_y) ** 2)
+    depth_map_grid_aerial = 1 - (radial_dist / radial_dist.max())
 
     # Core Processing Loop
     delta_yaws = []
@@ -81,17 +91,13 @@ def validate(model, processors, data_loader, config):
                 # Extract features for the i-th image in the batch
                 ground_features = ground_tokens[i:i+1].squeeze().detach().cpu().numpy()
                 aerial_features = aerial_tokens[i:i+1].squeeze().detach().cpu().numpy()
-
-                # Calculate grid size from actual token dimensions
-                grid_dim = int(np.sqrt(ground_features.shape[0]))  # assuming square grid
                 
                 if debug:
                     print("fov", fov)
                     print("yaw", yaw)
                     print("pitch", pitch)
-                    print("normalized_features1.shape:", ground_features.shape)
-                    print("normalized_features2.shape:", aerial_features.shape)
-                    print("grid_size:", grid_dim)
+                    print("ground_features.shape:", ground_features.shape)
+                    print("aerial_features.shape:", aerial_features.shape)
 
                 # Convert images to numpy for visualization
                 if processors is not None:
@@ -112,21 +118,40 @@ def validate(model, processors, data_loader, config):
                 ground_image_no_sky, sky_mask, sky_grid = sky_filter(ground_image_vis, debug=debug)
 
                 # Apply depth estimation
-                depth_map, depth_map_grid = depth_anything(ground_image_no_sky, debug=debug)
+                depth_map_ground, depth_map_grid_ground = depth_anything(ground_image_no_sky, debug=debug)
 
-                fov_x_i = fov_x[i].item()                          # horizontal fov in degrees
-                angle_step = fov_x_i / grid_dim
+                fov_x_i = fov_x[i].item()   # horizontal fov in degrees
+                angle_step = fov_x_i / grid_size_ground[1]
 
                 # Compute Averaged Tokens using the weight vector, excluding sky tokens
-                fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens = get_averaged_vertical_tokens(angle_step, ground_features, grid_dim, sky_grid, depth_map_grid, threshold=threshold)
-                fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens = get_averaged_radial_tokens(angle_step, aerial_features, grid_dim, sky_grid, depth_map_grid)
-                
+                vertical_averaged_tokens = get_averaged_vertical_tokens(
+                    angle_step=angle_step,
+                    image_tokens=ground_features,
+                    grid_size=grid_size_ground,
+                    sky_grid=sky_grid,
+                    depth_map_grid=depth_map_grid_ground,
+                    num_layers=num_layers,
+                    debug=debug
+                )
+                radial_averaged_tokens = get_averaged_radial_tokens(
+                    angle_step=angle_step,
+                    image_tokens=aerial_features,
+                    grid_size=grid_size_aerial,
+                    sky_grid=sky_grid,
+                    depth_map_grid=depth_map_grid_aerial,
+                    num_layers=num_layers,
+                    debug=debug
+                )
+
                 if debug:
-                    print("averaged vertical tokens: ", fore_vert_avg_tokens.shape)
-                    print("averaged radial tokens: ", fore_rad_avg_tokens.shape)   
+                    print("averaged vertical tokens: ", vertical_averaged_tokens.shape)
+                    print("averaged radial tokens: ", radial_averaged_tokens.shape)
+
+                if debug:
+                    return 0
 
                 # Find the best alignment
-                best_orientation, distances, min_distance, confidence = find_alignment(loss, fore_vert_avg_tokens, midd_vert_avg_tokens, back_vert_avg_tokens, fore_rad_avg_tokens, midd_rad_avg_tokens, back_rad_avg_tokens, grid_dim, fov_x_i, debug=False)
+                best_orientation, distances, min_distance, confidence = find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_size_ground, fov_x_i, debug=False)
 
                 delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
                 if delta_yaw < 0:
@@ -135,69 +160,17 @@ def validate(model, processors, data_loader, config):
 
                 if save_mode == 'all':
 
-                    # fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
-
-                    # ax1.imshow(ground_image_np)
-                    # ax1.set_title("Ground Image - Yaw: {:.1f}°".format(yaw))
-                    # ax1.axis('off')
-
-                    # ax2.imshow(aerial_image_np)
-                    # radius = aerial_image_np.shape[0] // 2
-                    # center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-                    # end_x = int(center[0] + radius * np.cos(np.deg2rad(best_orientation)))
-                    # end_y = int(center[1] - radius * np.sin(np.deg2rad(best_orientation)))
-                    # end_x_GT = int(center[0] + radius * np.cos(np.deg2rad(90 - (yaw - 180))))
-                    # end_y_GT = int(center[1] - radius * np.sin(np.deg2rad(90 - (yaw - 180))))
-                    # line_pred = ax2.plot([center[0], end_x], [center[1], end_y], color='red', linestyle='--', label='Prediction')
-                    # line_gt = ax2.plot([center[0], end_x_GT], [center[1], end_y_GT], color='orange', linestyle='--', label='Ground Truth')
-
-                    # ax2.set_title("Aerial Image Orientation - Delta: {:.4f}°".format(delta_yaw))
-                    # ax2.legend(loc='upper right')
-                    # ax2.axis('off')
-
-                    # ax3.plot(np.arange(0, 360, angle_step), distances)
-                    # ax3.set_title("Distance vs Orientation")
-                    # ax3.grid(True)
-                    # ax3.set_xlabel('Orientation')
-                    # ax3.set_ylabel('Distance')
-                    # ax3.set_xlim(0, 360)
-                    # ax3.set_ylim(min(distances), max(distances))
-
-                    # ax4.imshow(aerial_image_np)
-                    # radius = aerial_image_np.shape[0] // 2
-                    # center = (aerial_image_np.shape[1] // 2, aerial_image_np.shape[0] // 2)
-                    # min_dist = min(distances)
-                    # max_dist = max(distances)
-                    # for j, beta in enumerate(np.arange(0, 360, angle_step)):
-                    #     end_x = int(center[0] + radius * np.cos(np.deg2rad(beta)))
-                    #     end_y = int(center[1] - radius * np.sin(np.deg2rad(beta)))
-                    #     # Normalize distances for color map and ensure they're in [0, 1]
-                    #     normalized_dist = (distances[j] - min_dist) / (max_dist - min_dist) if max_dist > min_dist else 0.0
-                    #     normalized_dist = np.clip(normalized_dist, 0.0, 1.0)
-                    #     color = plt.cm.plasma(normalized_dist)
-                    #     ax4.plot([center[0], end_x], [center[1], end_y], color=color)
-                    # ax4.set_title("Aerial Image with Distances")
-                    # ax4.axis('off')
-
-                    # norm = plt.Normalize(min_dist, max_dist)
-                    # sm = plt.cm.ScalarMappable(cmap='plasma', norm=norm)
-                    # sm.set_array([])
-                    # cbar = plt.colorbar(sm, ax=ax4)
-
-                    # Determine the next available sample id (per group of images)
                     sample_id = _next_sample_id(results_dir)
-
-                    if save_mode == 'all':
-                        _save_separate_figures(
-                            results_dir=results_dir,
-                            sample_id=sample_id,
-                            ground_image_np=ground_image_np,
-                            aerial_image_np=aerial_image_np,
-                            best_orientation=best_orientation,
-                            yaw=yaw,
-                            angle_step=angle_step,
-                            distances=distances
-                        )
+                    _save_separate_figures(
+                        results_dir=results_dir,
+                        sample_id=sample_id,
+                        ground_image_np=ground_image_np,
+                        aerial_image_np=aerial_image_np,
+                        best_orientation=best_orientation,
+                        yaw=yaw,
+                        angle_step=angle_step,
+                        distances=distances
+                    )
 
                 # Update progress bar with current results
                 pbar.set_postfix({
@@ -211,27 +184,65 @@ def validate(model, processors, data_loader, config):
     error_mean = np.mean(delta_yaws)
     error_std = np.std(delta_yaws)
     error_median = np.median(delta_yaws)
-    
-    print(f"Mean Delta Yaw Error: {error_mean}")
-    print(f"Standard Deviation of Delta Yaw Error: {error_std}")
-    print(f"Median Delta Yaw Error: {error_median}")
+    recall_at_k = np.mean(delta_yaws <= config['recall_k']) * 100.0
 
-    # Show an histogram of the delta_yaw errors
+    # Calculate metrics for directional errors
+    directional_errors = np.minimum(delta_yaws, 180 - delta_yaws)
+    dir_error_mean = np.mean(directional_errors)
+    dir_error_std = np.std(directional_errors)
+    dir_error_median = np.median(directional_errors)
+    tau_recall_at_k = np.mean(directional_errors <= config['recall_k']) * 100.0
+
+    # Save all metrics to JSON
+    metrics = {
+        "mean": float(error_mean),
+        "median": float(error_median),
+        "tau_mean": float(dir_error_mean),
+        "tau_median": float(dir_error_median),
+        f"recall_at_{config['recall_k']}": float(recall_at_k),
+        f"tau_recall_at_{config['recall_k']}": float(tau_recall_at_k)
+    }
+
+    print(f"\nOverall Delta Yaw Mean Error: {error_mean:.2f}°")
+    print(f"Overall Delta Yaw Median Error: {error_median:.2f}°")
+    print(f"Overall Recall@{config['recall_k']}: {recall_at_k:.2f}%")
+    print(f"\nDirectional Error Mean (τMean): {dir_error_mean:.2f}°")
+    print(f"Directional Error Median (τMedian): {dir_error_median:.2f}°")
+    print(f"Directional Error Recall@{config['recall_k']} (τRecall): {tau_recall_at_k:.2f}%")
+
+    # Update histogram to show recall instead of standard deviation
     if save_mode in ['hist', 'all']:
         plt.figure(figsize=(10, 6))
         plt.hist(delta_yaws, bins=50, edgecolor='black', alpha=0.7)
-        plt.xlabel('Absolute Orientation Error (degrees)', fontsize=12)
+        plt.xlabel('Delta Yaw (degrees)', fontsize=12)
         plt.ylabel('Frequency', fontsize=12)
-        plt.title(f'Orientation Error Distribution - {config['dataset']}\n' +
-                f'Mean: {error_mean:.2f}°, Median: {error_median:.2f}°, Std: {error_std:.2f}°',
+        plt.title(f'Delta Yaw Distribution - CVGlobal\n' +
+                r'$\tau$Mean: ' + f'{dir_error_mean:.2f}°, Median: {error_median:.2f}°, r@{config['recall_k']}: {recall_at_k:.2f}%',
                 fontsize=14)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.savefig(os.path.join(results_dir, 'delta_yaws_hist.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+
+        # Plot histogram for directional errors
+        plt.figure(figsize=(10, 6))
+        plt.hist(directional_errors, bins=50, edgecolor='black', alpha=0.7)
+        plt.xlabel('Directional Error (degrees)', fontsize=12)
+        plt.ylabel('Frequency', fontsize=12)
+        plt.title(f'Directional Error Distribution - CVGlobal\n' +
+                r'$\tau$Mean: ' + f'{dir_error_mean:.2f}°, Median: {dir_error_median:.2f}°, r@{config['recall_k']}: {recall_at_k:.2f}%',
+                fontsize=14)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(results_dir, 'directional_error_hist.png'), dpi=300, bbox_inches='tight')
+        plt.close()
     
     # Save delta yaws to pickle file
     with open(os.path.join(results_dir, 'delta_yaws.pkl'), 'wb') as f:
         pickle.dump(delta_yaws, f)
+
+    with open(os.path.join(results_dir, 'metrics.json'), 'w') as f:
+                json.dump(metrics, f, indent=4)
     
     # Save statistics to well-formatted info.txt file
     with open(os.path.join(results_dir, 'info.txt'), 'w') as f:

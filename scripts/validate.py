@@ -22,21 +22,25 @@ warnings.filterwarnings("ignore")
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Validate the ZeSCO model.')
     parser.add_argument('--backbone', type=str, default='dinov3', help='Model to use')
+    parser.add_argument('--num_layers', type=int, default=2, help='Number of layers in which to divide the image')
+    parser.add_argument('--crop_percentage', type=float, default=0.3, help='Percentage of the image to crop')
+    parser.add_argument('--fov', type=int, default=90, help='Horizontal Field of View for ground images')
+    parser.add_argument('--image_size', type=int, default=224, help='Reference image square dimension')
     parser.add_argument('--loss', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--dataset', type=str, default='cvglobal', help='Dataset to use')
-    parser.add_argument('--crop_percentage', type=float, default=0.25, help='Percentage of the image to crop')
     parser.add_argument('--sample_percentage', type=float, default=0.02, help='Percentage of dataset to sample for testing')
+    parser.add_argument('--recall_k', type=int, default=5, help='K value for Recall@K calculation')
     parser.add_argument('--output_dir', type=str, default='untitled', help='Path to save the model and results')
-    parser.add_argument('--threshold', type=float, default=0.4, help='Needed for the middleground weights')
     parser.add_argument('--save_mode', type=str, default='hist', choices=['all', 'hist'], help='Save only the combined 2x2 figure, only the 4 separate figures, or both')
     parser.add_argument('--debug', action='store_true', help='Debug mode')
     args = parser.parse_args()
 
     # Settings
-    image_size = 224
+    image_size = args.image_size
     aerial_scaling = 2
     BATCH_SIZE = 8
     seed = 42
+    horizontal_scaling = round(args.fov / 90.0) if args.fov >= 90 else 1.0
 
     # Set seed for reproducibility
     random.seed(seed)
@@ -51,26 +55,32 @@ if __name__ == '__main__':
 
     # Load the Model
     model = CrossviewModel(backbone=args.backbone, frozen=True).to(device)
-    grid_size = (image_size // model.patch_size, image_size // model.patch_size)
-    print(f"Model patch size: {model.patch_size}, grid size: {grid_size}")
+    grid_size_ground = (image_size // model.patch_size, image_size // model.patch_size * horizontal_scaling)
+    grid_size_aerial = (image_size // model.patch_size, image_size // model.patch_size)
+    print(f"Model patch size: {model.patch_size}, grid size ground: {grid_size_ground}, grid size aerial: {grid_size_aerial}")
     model.show()
 
     # Create config dictionary
     config = {
         'output_dir': args.output_dir,
         'backbone': args.backbone,
+        'fov': args.fov,
+        'horizontal_scaling': horizontal_scaling,
+        'image_size': image_size,
         'loss': args.loss,
         'dataset': args.dataset,
+        'num_layers': args.num_layers,
         'crop_percentage': args.crop_percentage,
         'sample_percentage': args.sample_percentage,
+        'recall_k': args.recall_k,
         'save_mode': args.save_mode,
         'debug': args.debug,
-        'threshold': args.threshold,
         'image_size': image_size,
         'aerial_scaling': aerial_scaling,
         'batch_size': BATCH_SIZE,
         'device': device,
-        'grid_size': grid_size,
+        'grid_size_ground': grid_size_ground,
+        'grid_size_aerial': grid_size_aerial,
         'seed': 42,
         'main_output_dir': r'..\results'
     }
@@ -78,18 +88,21 @@ if __name__ == '__main__':
     # Get Dataset Images
     if config['dataset'].lower() == "cvglobal":
         dataset_path = r'D:\cross_view_localization_DSM\Data\CVGlobal'
-        train_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=0.02, split_ratio=1, groundtype='panos')
+        paired_filenames, _ = sample_cvusa_images(dataset_path, sample_percentage=args.sample_percentage, split_ratio=1, groundtype='panos')
+    elif config['dataset'].lower() == "cvusa":
+        dataset_path = r'D:\cross_view_localization_DSM\Data\CVUSA'
+        _, paired_filenames = sample_cvusa_images(dataset_path, sample_percentage=args.sample_percentage, split_ratio=1, groundtype='panos')
 
     # Get the processor and transforms
     processors = get_processors(config['backbone'])
-    transform_ground, transform_aerial = get_transforms(processors, image_size, aerial_scaling, crop_percentage=args.crop_percentage)
+    transform_ground, transform_aerial = get_transforms(processors, image_size, aerial_scaling, crop_percentage=args.crop_percentage, horizontal_scaling=horizontal_scaling)
 
     # Create generator for reproducible DataLoader
     generator = torch.Generator()
     generator.manual_seed(seed)
 
     # Initialize the dataset and dataloader
-    paired_dataset = PairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground, cutout_from_pano=True)
+    paired_dataset = PairedImagesDataset(paired_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground, cutout_from_pano=True, fov_x=config['fov'])
     data_loader = DataLoader(
         paired_dataset, 
         batch_size=BATCH_SIZE, 

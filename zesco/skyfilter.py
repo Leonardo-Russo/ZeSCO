@@ -167,20 +167,22 @@ class SkyFilter(nn.Module):
 
         # Visualize the original image, mask, sky-removed image and grid mask
         if debug:
-            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 18))
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(8, 6))
             ax1.imshow(ground_image_vis)
-            ax1.set_title("Original Image")
+            ax1.set_title("Original Image", fontsize=12, fontweight='bold')
             ax1.axis('off')
             ax2.imshow(sky_mask, cmap='gray')
-            ax2.set_title("Sky Mask")
+            ax2.set_title("Sky Mask", fontsize=12, fontweight='bold')
             ax2.axis('off')
             ax3.imshow(ground_image_no_sky)
-            ax3.set_title("Image Without Sky")
+            ax3.set_title("Image Without Sky", fontsize=12, fontweight='bold')
             ax3.axis('off')
             ax4.imshow(grid_mask, cmap='gray')
-            ax4.set_title("Grid Mask")
+            ax4.set_title("Grid Mask", fontsize=12, fontweight='bold')
             ax4.axis('off')
-            plt.show()
+            plt.tight_layout()
+            plt.savefig(r'..\debug\sky_filter.png', bbox_inches='tight', dpi=300)
+            plt.show(block=False)
 
         return ground_image_no_sky, sky_mask, grid_mask
 

@@ -30,11 +30,12 @@ warnings.simplefilter("ignore", category=UserWarning)
         
 
 class CrossviewModel(nn.Module):
-    def __init__(self, backbone='dinov2', frozen=True, device=None):
+    def __init__(self, backbone='dinov2', frozen=True, fov=90):
         super(CrossviewModel, self).__init__()
 
         self.backbone = backbone
         self.pretrained = frozen
+        self.fov = fov
 
         if backbone == "dinov2":
             
@@ -59,7 +60,7 @@ class CrossviewModel(nn.Module):
 
         elif backbone == 'clip':
 
-            self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16").to(self.device)
+            self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16")
             self.patch_size = 16
 
         elif backbone == "resnet50":
@@ -108,14 +109,13 @@ class CrossviewModel(nn.Module):
 
         return ground_patch_features_flat, aerial_patch_features_flat
 
-    def _forward_clip(self, ground_image, aerial_image, debug):
-
-        ground_inputs = self.processor(images=ground_image, return_tensors="pt", do_rescale=False)
-        aerial_inputs = self.processor(images=aerial_image, return_tensors="pt", do_rescale=False)
+    def _forward_clip(self, ground_input, aerial_input, debug):
 
         # Get the intermediate feature maps
-        ground_features = self.model.vision_model(pixel_values=ground_inputs["pixel_values"].to(self.device)).last_hidden_state.detach()
-        aerial_features = self.model.vision_model(pixel_values=aerial_inputs["pixel_values"].to(self.device)).last_hidden_state.detach()
+        # ground_features = self.model.vision_model(ground_input).last_hidden_state.detach()
+        # aerial_features = self.model.vision_model(aerial_input).last_hidden_state.detach()
+        ground_features = self.model.vision_model(ground_input).last_hidden_state
+        aerial_features = self.model.vision_model(aerial_input).last_hidden_state
 
         ground_tokens = ground_features[:, 1:, :]
         aerial_tokens = aerial_features[:, 1:, :]
@@ -211,8 +211,6 @@ class CrossviewModel(nn.Module):
             return self._forward_clip(ground_input, aerial_input, debug)
         elif self.backbone == 'dinov2':
             return self._forward_dinov2(ground_input, aerial_input, debug)
-        elif self.backbone == 'dinov2T':
-            return self._forward_dinov2T(ground_input, aerial_input, debug)
         elif self.backbone == 'resnet50':
             return self._forward_resnet50(ground_input, aerial_input, debug)
         elif self.backbone == 'dinov3':
@@ -269,10 +267,9 @@ class CrossviewModel(nn.Module):
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
         return normalized_tokens
     
-    def show_tokens(self, imgs_tokens, grid_shape=None, mode="show", results_path=None, dpi=300, return_tokens=False):
+    def show_tokens(self, imgs_tokens, grid_size, grid_shape=None, mode="show", results_path=None, dpi=300, return_tokens=False):
 
-        B, n, C = imgs_tokens.shape
-        n_patches = int(math.sqrt(n))
+        B, _, _ = imgs_tokens.shape
 
         if return_tokens:
             out = []
@@ -281,7 +278,7 @@ class CrossviewModel(nn.Module):
             side = int(np.ceil(np.sqrt(B)))
             grid_shape = (side, side)
 
-        fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(grid_shape[1]*4, grid_shape[0]*4))
+        fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(grid_shape[1]*5, grid_shape[0]*5))
         if isinstance(axes, np.ndarray):
             axes = axes.flatten()
         else:
@@ -293,7 +290,7 @@ class CrossviewModel(nn.Module):
             
             ax.axis('off')
 
-            vis_tokens = self.get_embedding_visualization(img_tokens, (n_patches, n_patches))
+            vis_tokens = self.get_embedding_visualization(img_tokens, grid_size=grid_size)
             out.append(vis_tokens) if return_tokens else None
             ax.imshow(vis_tokens)
 
@@ -356,16 +353,17 @@ class CrossviewModel(nn.Module):
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
         return normalized_tokens
 
-    def get_combined_embedding_visualization(self, tokens1, tokens2, grid_size1, grid_size2, random_state=20):
+    def get_combined_embedding_visualization(self, tokens1, tokens2, grid_size1, grid_size2, random_state=20, debug=False):
         pca = PCA(n_components=3, random_state=random_state)
 
         token1_shape = tokens1.shape[0]
         combined_tokens = np.concatenate((tokens1, tokens2), axis=0)
         reduced_tokens = pca.fit_transform(combined_tokens.astype(np.float32))
 
-        print("tokens1.shape", tokens1.shape)
-        print("tokens2.shape", tokens2.shape)
-        print("reduced_tokens.shape", reduced_tokens.shape)
+        if debug:
+            print("tokens1.shape", tokens1.shape)
+            print("tokens2.shape", tokens2.shape)
+            print("reduced_tokens.shape", reduced_tokens.shape)
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
 
         rgbimg1 = normalized_tokens[0:token1_shape, :]
@@ -497,26 +495,20 @@ def get_combined_embedding_visualization_all(tokens1, tokens2, tokens3, tokens4,
 
 
 class CosineSimilarityLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, reduction='mean'):
         super(CosineSimilarityLoss, self).__init__()
+        self.reduction = reduction
 
     def forward(self, x1, x2):
-        # x1_flat = x1.view(x1.size(0), -1)           # flatten the last two dimensions
-        # x2_flat = x2.view(x2.size(0), -1)
         cos_sim = F.cosine_similarity(torch.tensor(x1), torch.tensor(x2), dim=-1)         # compute cosine similarity        
-        loss = 1 - cos_sim.mean()                                       # convert similarity to loss
-        # print("cos_sim shape: ", cos_sim.shape)
-        # print("loss: ", loss)
 
-        # 768 is the inner dimension -> output is 256 x 256
+        if self.reduction == 'mean':
+            loss = 1 - cos_sim.mean()                                       # convert similarity to loss
+        elif self.reduction == 'sum':
+            loss = 1 - cos_sim.sum()
+        else:
+            raise ValueError("Invalid reduction mode")
 
-
-        # normalize so that each token has norm 1
-        # then matrix multiplication for its self to be MxM
-        # I want all diagonal elements to eb 1 and non-diag to be 0
-
-        ## Implementation:
-        # compute cross-entropy loss for the matrixs
         return loss
     
 
