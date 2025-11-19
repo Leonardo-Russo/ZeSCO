@@ -188,8 +188,10 @@ def extract_cutout_from_360(image, fov=(90, 180), yaw=180, pitch=90, debug=False
             rect = patches.Rectangle((x1, y1_clamped), x2-x1, y2_clamped-y1_clamped,
                                      linewidth=2, edgecolor='r', facecolor='none')
             ax.add_patch(rect)
+
+        ax.axis('off')
         
-        plt.title('Cutout Region (with cylindrical wrapping)')
+        plt.title('Cutout Region from Original Image')
         plt.show()
 
     return cutout
