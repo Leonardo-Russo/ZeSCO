@@ -198,7 +198,7 @@ def find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_
 
     return best_orientation, distances, min_distance, confidence
 
-def get_averaged_vertical_tokens(angle_step, image_tokens, grid_size, sky_grid, depth_map_grid, num_layers=3, debug=False):
+def get_averaged_vertical_tokens(angle_step, image_tokens, grid_size, sky_grid, depth_map_grid, num_layers=3, normalize_weights=True, debug=False):
 
     # Pre-compute midpoints outside the loop
     if num_layers >= 3:
@@ -246,6 +246,23 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_size, sky_grid, 
         if num_layers == 1:
             # Equal weights
             weights_gpu = mask_gpu / (mask_gpu.sum(dim=1, keepdim=True) + 1e-8)  # (grid_size[1], max_tokens)
+            
+            # Normalize weights if requested
+            if normalize_weights:
+                # For each vertical line, normalize to [0.1, 1.0]
+                for i in range(weights_gpu.shape[0]):
+                    w = weights_gpu[i]
+                    w_min = w[mask_gpu[i] > 0].min() if mask_gpu[i].sum() > 0 else 0
+                    w_max = w[mask_gpu[i] > 0].max() if mask_gpu[i].sum() > 0 else 1
+                    if w_max > w_min:
+                        weights_gpu[i] = torch.where(
+                            mask_gpu[i] > 0,
+                            0.1 + 0.9 * (w - w_min) / (w_max - w_min),
+                            w
+                        )
+                    # Renormalize to sum to 1
+                    weights_gpu[i] = weights_gpu[i] / (weights_gpu[i].sum() + 1e-8)
+            
             weights_gpu = weights_gpu.unsqueeze(1)  # (grid_size[1], 1, max_tokens)
             
         elif num_layers == 2:
@@ -274,6 +291,24 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_size, sky_grid, 
                 mth_weights = mth_weights / (mth_weights.sum(dim=1, keepdim=True) + 1e-8)
                 all_weights.append(mth_weights)
             all_weights.append(weights_back)
+            
+            # Normalize weights if requested
+            if normalize_weights:
+                # For each vertical line and layer, normalize to [0.1, 1.0]
+                for layer_idx, weights_layer in enumerate(all_weights):
+                    for i in range(weights_layer.shape[0]):
+                        w = weights_layer[i]
+                        w_min = w[mask_gpu[i] > 0].min() if mask_gpu[i].sum() > 0 else 0
+                        w_max = w[mask_gpu[i] > 0].max() if mask_gpu[i].sum() > 0 else 1
+                        if w_max > w_min:
+                            all_weights[layer_idx][i] = torch.where(
+                                mask_gpu[i] > 0,
+                                0.1 + 0.9 * (w - w_min) / (w_max - w_min),
+                                w
+                            )
+                        # Renormalize to sum to 1
+                        all_weights[layer_idx][i] = all_weights[layer_idx][i] / (all_weights[layer_idx][i].sum() + 1e-8)
+            
             weights_gpu = torch.stack(all_weights, dim=1)  # (grid_size[1], num_layers, max_tokens)
         
         # Batch matrix multiplication: (grid_size[1], num_layers, max_tokens) @ (grid_size[1], max_tokens, feature_dim)
@@ -310,6 +345,15 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_size, sky_grid, 
             if num_layers == 1:
                 # Compute equal weights for all tokens
                 weights = np.ones((1, len(vertical_tokens))) / len(vertical_tokens)
+                
+                # Normalize weights if requested
+                if normalize_weights and len(vertical_tokens) > 0:
+                    for layer_idx in range(weights.shape[0]):
+                        w = weights[layer_idx]
+                        w_min, w_max = w.min(), w.max()
+                        if w_max > w_min:
+                            weights[layer_idx] = 0.1 + 0.9 * (w - w_min) / (w_max - w_min)
+                            weights[layer_idx] = weights[layer_idx] / weights[layer_idx].sum()
 
             elif num_layers == 2:
                 # Compute foreground and background weights
@@ -373,6 +417,16 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_size, sky_grid, 
                     mth_weights = np.where(depth_values <= m, depth_values / m, (1 - depth_values) / (1 - m))
                     weights_middle.append(mth_weights / np.sum(mth_weights))
                 weights = np.stack([weights_fore, *weights_middle, weights_back])
+            
+            # Normalize weights if requested
+            if normalize_weights:
+                for layer_idx in range(weights.shape[0]):
+                    w = weights[layer_idx]
+                    w_min, w_max = w.min(), w.max()
+                    if w_max > w_min:
+                        weights[layer_idx] = 0.1 + 0.9 * (w - w_min) / (w_max - w_min)
+                        weights[layer_idx] = weights[layer_idx] / weights[layer_idx].sum()
+            
             vertical_weights.append(weights)
             indices_weights.append(indices)
 
@@ -463,7 +517,7 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_size, sky_grid, 
     averaged_vertical_tokens = np.transpose(averaged_vertical_tokens, (1, 0, 2))  # shape: (num_layers, grid_size, feature_dim)
     return averaged_vertical_tokens
 
-def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, depth_map_grid, num_layers=3, debug=False):
+def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, depth_map_grid, num_layers=3, normalize_weights=True, debug=False):
 
     # Pre-compute midpoints outside the loop
     if num_layers >= 3:
@@ -484,16 +538,16 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
         max_tokens = max(len(rt) for rt, _ in all_radial_data)
         if max_tokens == 0:
             # All empty - return zeros
-            result = np.zeros((num_layers, num_orientations, image_tokens.shape[1]))
+            result = np.zeros((num_layers, num_radial_directions, image_tokens.shape[1]))
             return result
         
         feature_dim = image_tokens.shape[1]
         
         # Prepare padded tensors
-        tokens_padded = np.zeros((num_orientations, max_tokens, feature_dim), dtype=np.float32)
-        depth_padded = np.zeros((num_orientations, max_tokens), dtype=np.float32)
-        mask = np.zeros((num_orientations, max_tokens), dtype=np.float32)
-        lengths = np.zeros(num_orientations, dtype=np.int32)
+        tokens_padded = np.zeros((num_radial_directions, max_tokens, feature_dim), dtype=np.float32)
+        depth_padded = np.zeros((num_radial_directions, max_tokens), dtype=np.float32)
+        mask = np.zeros((num_radial_directions, max_tokens), dtype=np.float32)
+        lengths = np.zeros(num_radial_directions, dtype=np.int32)
         
         for i, (rt, indices) in enumerate(all_radial_data):
             if len(rt) > 0:
@@ -504,25 +558,42 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
                 lengths[i] = len(rt)
         
         # Move to GPU
-        tokens_gpu = torch.from_numpy(tokens_padded).to(DEVICE)  # (num_orientations, max_tokens, feature_dim)
-        depth_gpu = torch.from_numpy(depth_padded).to(DEVICE)    # (num_orientations, max_tokens)
-        mask_gpu = torch.from_numpy(mask).to(DEVICE)             # (num_orientations, max_tokens)
-        lengths_gpu = torch.from_numpy(lengths).to(DEVICE)       # (num_orientations,)
+        tokens_gpu = torch.from_numpy(tokens_padded).to(DEVICE)  # (num_radial_directions, max_tokens, feature_dim)
+        depth_gpu = torch.from_numpy(depth_padded).to(DEVICE)    # (num_radial_directions, max_tokens)
+        mask_gpu = torch.from_numpy(mask).to(DEVICE)             # (num_radial_directions, max_tokens)
+        lengths_gpu = torch.from_numpy(lengths).to(DEVICE)       # (num_radial_directions,)
         
         # Compute weights on GPU for all orientations at once
         if num_layers == 1:
             # Equal weights
-            weights_gpu = mask_gpu / (mask_gpu.sum(dim=1, keepdim=True) + 1e-8)  # (num_orientations, max_tokens)
-            weights_gpu = weights_gpu.unsqueeze(1)  # (num_orientations, 1, max_tokens)
+            weights_gpu = mask_gpu / (mask_gpu.sum(dim=1, keepdim=True) + 1e-8)  # (num_radial_directions, max_tokens)
+            
+            # Normalize weights if requested
+            if normalize_weights:
+                # For each orientation, normalize to [0.1, 1.0]
+                for i in range(weights_gpu.shape[0]):
+                    w = weights_gpu[i]
+                    w_min = w[mask_gpu[i] > 0].min() if mask_gpu[i].sum() > 0 else 0
+                    w_max = w[mask_gpu[i] > 0].max() if mask_gpu[i].sum() > 0 else 1
+                    if w_max > w_min:
+                        weights_gpu[i] = torch.where(
+                            mask_gpu[i] > 0,
+                            0.1 + 0.9 * (w - w_min) / (w_max - w_min),
+                            w
+                        )
+                    # Renormalize to sum to 1
+                    weights_gpu[i] = weights_gpu[i] / (weights_gpu[i].sum() + 1e-8)
+            
+            weights_gpu = weights_gpu.unsqueeze(1)  # (num_radial_directions, 1, max_tokens)
             
         elif num_layers == 2:
             # Foreground and background based on radial distance
             # Create position-based weights (closer = foreground, farther = background)
             position_indices = torch.arange(max_tokens, device=DEVICE).unsqueeze(0)  # (1, max_tokens)
-            lengths_expanded = lengths_gpu.unsqueeze(1)  # (num_orientations, 1)
+            lengths_expanded = lengths_gpu.unsqueeze(1)  # (num_radial_directions, 1)
             
             # Normalized position (0 at center, 1 at edge)
-            norm_positions = position_indices / (lengths_expanded + 1e-8)  # (num_orientations, max_tokens)
+            norm_positions = position_indices / (lengths_expanded + 1e-8)  # (num_radial_directions, max_tokens)
             
             # Foreground: decreases with distance (1 -> 0)
             weights_fore = (1 - norm_positions) * mask_gpu
@@ -532,7 +603,41 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
             weights_back = norm_positions * mask_gpu
             weights_back = weights_back / (weights_back.sum(dim=1, keepdim=True) + 1e-8)
             
-            weights_gpu = torch.stack([weights_fore, weights_back], dim=1)  # (num_orientations, 2, max_tokens)
+            # Normalize weights if requested
+            if normalize_weights:
+                # For each orientation and layer, normalize to [0.1, 1.0]
+                for i in range(weights_fore.shape[0]):
+                    for weights_layer in [weights_fore, weights_back]:
+                        w = weights_layer[i]
+                        w_min = w[mask_gpu[i] > 0].min() if mask_gpu[i].sum() > 0 else 0
+                        w_max = w[mask_gpu[i] > 0].max() if mask_gpu[i].sum() > 0 else 1
+                        if w_max > w_min:
+                            weights_layer[i] = torch.where(
+                                mask_gpu[i] > 0,
+                                0.1 + 0.9 * (w - w_min) / (w_max - w_min),
+                                w
+                            )
+                        # Renormalize to sum to 1
+                        weights_layer[i] = weights_layer[i] / (weights_layer[i].sum() + 1e-8)
+            
+            weights_gpu = torch.stack([weights_fore, weights_back], dim=1)  # (num_radial_directions, 2, max_tokens)
+            if normalize_weights:
+                # For each vertical line and layer, normalize to [0.1, 1.0]
+                for i in range(weights_fore.shape[0]):
+                    for weights_layer in [weights_fore, weights_back]:
+                        w = weights_layer[i]
+                        w_min = w[mask_gpu[i] > 0].min() if mask_gpu[i].sum() > 0 else 0
+                        w_max = w[mask_gpu[i] > 0].max() if mask_gpu[i].sum() > 0 else 1
+                        if w_max > w_min:
+                            weights_layer[i] = torch.where(
+                                mask_gpu[i] > 0,
+                                0.1 + 0.9 * (w - w_min) / (w_max - w_min),
+                                w
+                            )
+                        # Renormalize to sum to 1
+                        weights_layer[i] = weights_layer[i] / (weights_layer[i].sum() + 1e-8)
+            
+            weights_gpu = torch.stack([weights_fore, weights_back], dim=1)  # (grid_size[1], 2, max_tokens)
             
         else:  # num_layers >= 3
             # Position-based foreground/background
@@ -556,17 +661,35 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
                 mth_weights = mth_weights / (mth_weights.sum(dim=1, keepdim=True) + 1e-8)
                 all_weights.append(mth_weights)
             all_weights.append(weights_back)
-            weights_gpu = torch.stack(all_weights, dim=1)  # (num_orientations, num_layers, max_tokens)
+            
+            # Normalize weights if requested
+            if normalize_weights:
+                # For each orientation and layer, normalize to [0.1, 1.0]
+                for layer_idx, weights_layer in enumerate(all_weights):
+                    for i in range(weights_layer.shape[0]):
+                        w = weights_layer[i]
+                        w_min = w[mask_gpu[i] > 0].min() if mask_gpu[i].sum() > 0 else 0
+                        w_max = w[mask_gpu[i] > 0].max() if mask_gpu[i].sum() > 0 else 1
+                        if w_max > w_min:
+                            all_weights[layer_idx][i] = torch.where(
+                                mask_gpu[i] > 0,
+                                0.1 + 0.9 * (w - w_min) / (w_max - w_min),
+                                w
+                            )
+                        # Renormalize to sum to 1
+                        all_weights[layer_idx][i] = all_weights[layer_idx][i] / (all_weights[layer_idx][i].sum() + 1e-8)
+            
+            weights_gpu = torch.stack(all_weights, dim=1)  # (num_radial_directions, num_layers, max_tokens)
         
-        # Batch matrix multiplication: (num_orientations, num_layers, max_tokens) @ (num_orientations, max_tokens, feature_dim)
+        # Batch matrix multiplication: (num_radial_directions, num_layers, max_tokens) @ (num_radial_directions, max_tokens, feature_dim)
         averaged_tokens_gpu = torch.bmm(
-            weights_gpu.view(num_orientations * num_layers, 1, max_tokens),
-            tokens_gpu.unsqueeze(1).expand(-1, num_layers, -1, -1).reshape(num_orientations * num_layers, max_tokens, feature_dim)
-        ).view(num_orientations, num_layers, feature_dim)
+            weights_gpu.view(num_radial_directions * num_layers, 1, max_tokens),
+            tokens_gpu.unsqueeze(1).expand(-1, num_layers, -1, -1).reshape(num_radial_directions * num_layers, max_tokens, feature_dim)
+        ).view(num_radial_directions, num_layers, feature_dim)
         
         # Convert back to CPU and transpose
-        averaged_radial_tokens = averaged_tokens_gpu.cpu().numpy()  # (num_orientations, num_layers, feature_dim)
-        averaged_radial_tokens = np.transpose(averaged_radial_tokens, (1, 0, 2))  # (num_layers, num_orientations, feature_dim)
+        averaged_radial_tokens = averaged_tokens_gpu.cpu().numpy()  # (num_num_radial_directionsrientations, num_layers, feature_dim)
+        averaged_radial_tokens = np.transpose(averaged_radial_tokens, (1, 0, 2))  # (num_layers, num_radial_directions, feature_dim)
         
         # Clean up GPU memory
         del tokens_gpu, depth_gpu, mask_gpu, lengths_gpu, weights_gpu, averaged_tokens_gpu
@@ -590,6 +713,15 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
             if num_layers == 1:
                 # Compute equal weights for all tokens
                 weights = np.ones((1, len(radial_tokens))) / len(radial_tokens)
+                
+                # Normalize weights if requested
+                if normalize_weights and len(radial_tokens) > 0:
+                    for layer_idx in range(weights.shape[0]):
+                        w = weights[layer_idx]
+                        w_min, w_max = w.min(), w.max()
+                        if w_max > w_min:
+                            weights[layer_idx] = 0.1 + 0.9 * (w - w_min) / (w_max - w_min)
+                            weights[layer_idx] = weights[layer_idx] / weights[layer_idx].sum()
 
             elif num_layers == 2:
                 # Compute foreground and background weights (pre-normalized)
@@ -600,6 +732,15 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
                 weights_fore = weights_fore / weights_fore.sum()
                 weights_back = weights_back / weights_back.sum()
                 weights = np.stack((weights_fore, weights_back))
+                
+                # Normalize weights if requested
+                if normalize_weights:
+                    for layer_idx in range(weights.shape[0]):
+                        w = weights[layer_idx]
+                        w_min, w_max = w.min(), w.max()
+                        if w_max > w_min:
+                            weights[layer_idx] = 0.1 + 0.9 * (w - w_min) / (w_max - w_min)
+                            weights[layer_idx] = weights[layer_idx] / weights[layer_idx].sum()
                 
             else:  # num_layers >= 3
                 n = len(radial_tokens)
@@ -621,6 +762,15 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
                     weights_middle.append(mth_weights / mth_weights.sum())
                 
                 weights = np.stack([weights_fore, *weights_middle, weights_back])
+            
+            # Normalize weights if requested
+            if normalize_weights:
+                for layer_idx in range(weights.shape[0]):
+                    w = weights[layer_idx]
+                    w_min, w_max = w.min(), w.max()
+                    if w_max > w_min:
+                        weights[layer_idx] = 0.1 + 0.9 * (w - w_min) / (w_max - w_min)
+                        weights[layer_idx] = weights[layer_idx] / weights[layer_idx].sum()
 
             # Single matrix multiplication for all layers
             averaged_tokens = weights @ radial_tokens  # shape: (num_layers, feature_dim)
@@ -679,10 +829,10 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
             # Create grid visualization for this angle
             grid_viz = np.zeros(grid_size)
             for token_idx, (y, x) in enumerate(indices):
-                grid_viz[y, x] = token_idx + 1  # Color by distance from center
+                grid_viz[y, x] = 1  # Mark collected tokens as 1 (white)
             
             # Plot
-            im = ax.imshow(grid_viz, cmap='plasma', interpolation='nearest')
+            im = ax.imshow(grid_viz, cmap='gray', interpolation='nearest', vmin=0, vmax=1)
             ax.set_title(f'Radial Line @ {beta:.0f}°', fontsize=10, fontweight='bold')
             ax.set_xlabel('X Position', fontsize=8)
             ax.set_ylabel('Y Position', fontsize=8)
@@ -734,8 +884,8 @@ def get_averaged_radial_tokens(angle_step, image_tokens, grid_size, sky_grid, de
             ax.set_ylabel('Token Index along Radial Line', fontsize=10)
             
             # Set x-axis ticks to show angles
-            num_orientations = radial_weights_padded.shape[0]
-            tick_positions = np.linspace(0, num_orientations - 1, 9)  # 9 ticks for 0, 45, 90, ..., 360
+            num_radial_directions = radial_weights_padded.shape[0]
+            tick_positions = np.linspace(0, num_radial_directions - 1, 9)  # 9 ticks for 0, 45, 90, ..., 360
             tick_labels = [f'{int(angle)}°' for angle in np.linspace(0, 360, 9)]
             ax.set_xticks(tick_positions)
             ax.set_xticklabels(tick_labels, rotation=45)
