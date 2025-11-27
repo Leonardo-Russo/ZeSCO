@@ -256,7 +256,41 @@ class SkyFilter(nn.Module):
     def get_mask(self, img):
 
         height, width, c = img.shape
+        
+        # Determine aspect ratio from grid_size (height, width)
+        aspect_ratio = self.grid_size[1] / self.grid_size[0]  # width / height
+        
+        # For panoramic images (aspect ratio > 1), split into square tiles
+        if aspect_ratio > 1.5:  # Handles 1:2 (ratio=2) and 1:4 (ratio=4)
+            num_tiles = int(round(aspect_ratio))
+            tile_width = width // num_tiles
+            
+            # Process each tile
+            tile_masks = []
+            for i in range(num_tiles):
+                # Extract tile
+                start_x = i * tile_width
+                end_x = (i + 1) * tile_width if i < num_tiles - 1 else width
+                tile = img[:, start_x:end_x, :]
+                
+                # Process tile (should be square or close to it)
+                tile_mask = self._process_single_tile(tile)
+                tile_masks.append(tile_mask)
+            
+            # Stitch tiles back together
+            output = np.concatenate(tile_masks, axis=1)
+            
+        else:
+            # For square or near-square images, process normally
+            output = self._process_single_tile(img)
 
+        return self.refine(output, img)
+    
+    
+    def _process_single_tile(self, img):
+        """Process a single square tile through the model."""
+        height, width, c = img.shape
+        
         # Resize image to fit the model input
         new_img = cv2.resize(img, (self.width, self.height), interpolation=cv2.INTER_AREA)
         new_img = np.array(new_img, dtype=np.float32)
@@ -274,8 +308,8 @@ class SkyFilter(nn.Module):
         output = cv2.resize(output, (width, height), interpolation=cv2.INTER_LANCZOS4)
         output = np.array([output, output, output]).transpose((1, 2, 0))
         output = np.clip(output, a_max=1.0, a_min=0.0)
-
-        return self.refine(output, img)        
+        
+        return output        
 
 
     def refine(self, pred, img):

@@ -26,6 +26,7 @@ import matplotlib.pyplot as plt
 import os
 import re
 import torch
+from torch.nn import functional as F
 
 # Check if CUDA is available
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -145,18 +146,24 @@ def find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_
         vert_gathered = vert_tokens_gpu[:, vert_indices, :]  # (num_layers, 1, num_vertical_lines, feature_dim)
         vert_gathered = vert_gathered.squeeze(1).permute(1, 0, 2)  # (num_vertical_lines, num_layers, feature_dim)
         vert_gathered = vert_gathered.unsqueeze(0).expand(num_steps, -1, -1, -1)  # (num_steps, num_vertical_lines, num_layers, feature_dim)
-        
+
         # Compute cosine similarity losses in batch
         # Normalize
         rad_norm = torch.nn.functional.normalize(rad_gathered, p=2, dim=-1)
         vert_norm = torch.nn.functional.normalize(vert_gathered, p=2, dim=-1)
         
         # Cosine similarity: (num_steps, num_vertical_lines, num_layers)
-        cos_sim = (rad_norm * vert_norm).sum(dim=-1)
+        # cos_sim = (rad_norm * vert_norm).sum(dim=-1)
+        cos_sim = F.cosine_similarity(rad_gathered, vert_gathered, dim=-1)
         
         # Convert to distance (1 - cosine similarity) and average over layers and grid
         distances_per_layer = 1 - cos_sim  # (num_steps, num_vertical_lines, num_layers)
         cone_distances = distances_per_layer.mean(dim=2).mean(dim=1)  # (num_steps,)
+
+
+        # # Compute CosineSimilarityLoss
+        # loss_value = loss(rad_gathered, vert_gathered)
+        # cone_distances = loss_value.mean(dim=2).mean(dim=1)  # (num_steps,)
         
         # Convert back to CPU for final operations
         distances = cone_distances.cpu().numpy().tolist()

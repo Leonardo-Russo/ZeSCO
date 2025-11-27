@@ -9,7 +9,7 @@ import pickle
 import matplotlib.pyplot as plt
 import time
 
-from zesco.dataset import PairedImagesDataset, sample_cvusa_images, sample_cities_images, get_transforms
+from zesco.dataset import PairedImagesDataset, sample_cvusa_images, get_transforms
 from zesco.model import CrossviewModel, get_processors
 from zesco.validate import validate
 
@@ -31,8 +31,7 @@ if __name__ == '__main__':
     parser.add_argument('--loss', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
     parser.add_argument('--sample_percentage', type=float, default=0.2, help='Percentage of dataset to sample for testing')
     parser.add_argument('--recall_k', type=int, default=5, help='K value for Recall@K calculation')
-    parser.add_argument('--threshold', type=float, default=0.4, help='Needed for the middleground weights')
-    parser.add_argument('--main_output_dir', type=str, default=r'..\results\individual_untitled', help='Directory to save output files')
+    parser.add_argument('--main_output_dir', type=str, default='auto', help='Directory to save output files')
     parser.add_argument('--save_mode', type=str, default='hist', choices=['all', 'hist'], help='Save only the combined 2x2 figure, only the 4 separate figures, or both')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--debug', action='store_true', help='Debug mode')
@@ -43,7 +42,7 @@ if __name__ == '__main__':
     aerial_scaling = 2
     BATCH_SIZE = 8
     seed = args.seed
-    horizontal_scaling = round(args.fov / 90.0) if args.fov >= 90 else 1.0
+    horizontal_scaling = round(args.fov / 90.0) if args.fov >= 90 else 1
 
     # Set seed
     random.seed(seed)
@@ -60,6 +59,12 @@ if __name__ == '__main__':
     print(f"Model patch size: {model.patch_size}, grid size ground: {grid_size_ground}, grid size aerial: {grid_size_aerial}")
     model.show()
 
+    # Set main output directory
+    if args.main_output_dir == 'auto':
+        main_output_dir = os.path.join(r'..\results', f"cvglobal_{args.backbone}_imsize{args.image_size}_fov{args.fov}_nl{args.num_layers}_cp{int(args.crop_percentage*100)}_sp{int(args.sample_percentage*100)}")
+    else:
+        main_output_dir = os.path.join(r'..\results', args.main_output_dir)
+
     # Create config dictionary
     config = {
         'output_dir': None,
@@ -75,7 +80,6 @@ if __name__ == '__main__':
         'recall_k': args.recall_k,
         'save_mode': args.save_mode,
         'debug': args.debug,
-        'threshold': args.threshold,
         'image_size': image_size,
         'aerial_scaling': aerial_scaling,
         'batch_size': BATCH_SIZE,
@@ -83,7 +87,7 @@ if __name__ == '__main__':
         'grid_size_ground': grid_size_ground,
         'grid_size_aerial': grid_size_aerial,
         'seed': args.seed,
-        'main_output_dir': os.path.join(r'..\results', args.main_output_dir)
+        'main_output_dir': os.path.join(r'..\results', main_output_dir)
     }
 
     # Get the processor and transforms
@@ -163,7 +167,7 @@ if __name__ == '__main__':
     tau_recall_at_k = np.mean(directional_errors <= config['recall_k']) * 100.0
     
     print(f"\nOverall Delta Yaw Median Error: {error_median:.2f}°")
-    print(f"Overall Recall@{args.threshold}: {recall_at_k:.2f}%")
+    print(f"Overall Recall@{config['recall_k']}: {recall_at_k:.2f}%")
 
     # Show an histogram of the delta_yaw errors
     plt.figure(figsize=(10, 6))
@@ -207,7 +211,7 @@ if __name__ == '__main__':
         f.write(f"Median Delta Yaw Error:     {np.median(global_delta_yaws):.4f}°\n")
         f.write(f"Minimum Delta Yaw Error:    {np.min(global_delta_yaws):.4f}°\n")
         f.write(f"Maximum Delta Yaw Error:    {np.max(global_delta_yaws):.4f}°\n")
-        f.write(f"Recall@{args.threshold}°:           {recall_at_k:.2f}%\n\n")
+        f.write(f"Recall@{config['recall_k']}°:           {recall_at_k:.2f}%\n\n")
         f.write("\nMedian Delta Yaw Error by Dataset:\n")
         f.write("-" * 35 + "\n")
         for dataset_name in DATASETS:
