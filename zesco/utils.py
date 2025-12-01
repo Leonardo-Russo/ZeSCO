@@ -64,7 +64,7 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=(14, 1
         grid_dim = grid_size[0]  if grid_size[0] == grid_size[1] else ValueError("Grid size must be square for radial token extraction.")
         for r in range(grid_dim):
             x = round(center_x + r * np.cos(np.deg2rad(angle)))
-            y = round(center_y - r * np.sin(np.deg2rad(angle)))
+            y = round(center_y - r * np.sin(np.deg2rad(angle)))  # Negative for counterclockwise (standard math convention)
             if 0 <= x < grid_dim and 0 <= y < grid_dim:
                 idx = y * grid_dim + x
                 if tokens is None:
@@ -216,8 +216,8 @@ def get_averaged_vertical_tokens(angle_step, image_tokens, grid_size, sky_grid, 
         # First, collect all tokens and indices for all vertical lines
         all_vertical_data = []
         for i in range(grid_size[1]):   # loop across vertical lines
-                vertical_tokens, indices = get_direction_tokens(image_tokens, vertical_idx=i, grid_size=grid_size, sky_grid=sky_grid)
-                all_vertical_data.append((vertical_tokens, indices))
+            vertical_tokens, indices = get_direction_tokens(image_tokens, vertical_idx=i, grid_size=grid_size, sky_grid=sky_grid)
+            all_vertical_data.append((vertical_tokens, indices))
         
         # Find max tokens for padding
         max_tokens = max(len(vt) for vt, _ in all_vertical_data)
