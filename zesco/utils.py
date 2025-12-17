@@ -19,6 +19,7 @@ Optimizations:
 - Padding enables batch processing despite variable token counts
 - Single GPU memory transfer per function call
 - Automatic memory cleanup after each operation
+- Cached radial/vertical line indices (call clear_indices_cache() if grid changes)
 """
 
 import numpy as np
@@ -33,6 +34,44 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 USE_GPU = torch.cuda.is_available()
 
 print(f"Running on: {DEVICE} | GPU Acceleration: {USE_GPU}")
+
+# Cache for precomputed indices (avoids recomputing radial/vertical line indices)
+_INDICES_CACHE = {}
+
+def _get_radial_indices_cached(angle, grid_size):
+    """Get radial line indices with caching to avoid recomputation."""
+    cache_key = (angle, grid_size[0], grid_size[1])
+    if cache_key not in _INDICES_CACHE:
+        center_y = grid_size[0] // 2
+        center_x = grid_size[1] // 2
+        grid_dim = grid_size[0]  # Assumes square grid
+        indices = []
+        
+        for r in range(grid_dim):
+            x = round(center_x + r * np.cos(np.deg2rad(angle)))
+            y = round(center_y - r * np.sin(np.deg2rad(angle)))
+            if 0 <= x < grid_dim and 0 <= y < grid_dim:
+                indices.append((y, x))
+            else:
+                break
+        _INDICES_CACHE[cache_key] = indices
+    return _INDICES_CACHE[cache_key]
+
+def _get_vertical_indices_cached(vertical_idx, grid_size, sky_grid):
+    """Get vertical line indices with caching and sky filtering."""
+    cache_key = ('vertical', vertical_idx, grid_size[0], grid_size[1], id(sky_grid))
+    if cache_key not in _INDICES_CACHE:
+        valid_indices = []
+        for y in range(grid_size[0]):
+            if sky_grid[y, vertical_idx] == 1:  # 1 indicates ground
+                valid_indices.append((y, vertical_idx))
+        _INDICES_CACHE[cache_key] = valid_indices
+    return _INDICES_CACHE[cache_key]
+
+def clear_indices_cache():
+    """Clear the indices cache. Call this if grid_size or sky_grid changes."""
+    global _INDICES_CACHE
+    _INDICES_CACHE = {}
 
 
 def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=(14, 14), sky_grid=None):
@@ -57,41 +96,35 @@ def get_direction_tokens(tokens, angle=None, vertical_idx=None, grid_size=(14, 1
         sky_grid = np.ones(grid_size)  # default to all ground if no sky_grid provided
     
     if angle is not None:  # Radial direction
-        center_y = grid_size[0] // 2
-        center_x = grid_size[1] // 2
-        direction_tokens = []
-        indices = []
-        grid_dim = grid_size[0]  if grid_size[0] == grid_size[1] else ValueError("Grid size must be square for radial token extraction.")
-        for r in range(grid_dim):
-            x = round(center_x + r * np.cos(np.deg2rad(angle)))
-            y = round(center_y - r * np.sin(np.deg2rad(angle)))  # Negative for counterclockwise (standard math convention)
-            if 0 <= x < grid_dim and 0 <= y < grid_dim:
+        # Use cached indices
+        indices = _get_radial_indices_cached(angle, grid_size)
+        
+        if tokens is None:
+            direction_tokens = [None] * len(indices)
+        else:
+            direction_tokens = []
+            grid_dim = grid_size[0]
+            for (y, x) in indices:
                 idx = y * grid_dim + x
-                if tokens is None:
-                    direction_tokens.append(None)
-                    indices.append((y, x))
+                if idx < tokens.shape[0]:
+                    direction_tokens.append(tokens[idx])
                 else:
-                    if idx < tokens.shape[0]:
-                        direction_tokens.append(tokens[idx])
-                        indices.append((y, x))
-                    else:
-                        break  # out of bounds
-            else:
-                break  # out of bounds
+                    break
         return np.array(direction_tokens), indices
+    
     elif vertical_idx is not None:      # vertical line
-        direction_tokens = tokens[vertical_idx::grid_size[0]]  # extract each vertical line
-
-        # Only grab valid tokens
-        valid_tokens = []
-        valid_indices = []
-        for i in range(grid_size[0]):  # loop over vertical positions
-            y = i
-            x = vertical_idx
-            if sky_grid[y, x] == 1:  # 1 indicates ground, 0 indicates sky
-                valid_tokens.append(direction_tokens[i])
-                valid_indices.append((y, x))
-        return np.array(valid_tokens), valid_indices
+        # Use cached indices (includes sky filtering)
+        indices = _get_vertical_indices_cached(vertical_idx, grid_size, sky_grid)
+        
+        if tokens is None:
+            direction_tokens = [None] * len(indices)
+        else:
+            direction_tokens = []
+            for (y, x) in indices:
+                idx = y * grid_size[0] + x
+                if idx < tokens.shape[0]:
+                    direction_tokens.append(tokens[idx])
+        return np.array(direction_tokens), indices
 
 def find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_size, image_span, debug=False):
     """

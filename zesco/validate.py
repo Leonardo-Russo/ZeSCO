@@ -86,6 +86,7 @@ def validate(model, processors, data_loader, config):
                 aerial_image = aerial_images[i:i+1]
                 fov = (fov_x[i].item(), fov_y[i].item())
                 yaw = yaws[i].item()
+                heading = yaw - 90
                 pitch = pitchs[i].item()
                 
                 # Extract features for the i-th image in the batch
@@ -153,9 +154,11 @@ def validate(model, processors, data_loader, config):
                 # Find the best alignment
                 best_orientation, distances, min_distance, confidence = find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_size_ground, fov_x_i, debug=False)
 
-                delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
+                delta_yaw = np.abs(((best_orientation - heading) + 180) % 360 - 180)
+                # delta_yaw_tau = np.abs((delta_yaw + 90) % 180 - 90)
                 if delta_yaw < 0:
                     delta_yaw += 180
+
                 delta_yaws.append(delta_yaw)
 
                 if save_mode == 'all':
