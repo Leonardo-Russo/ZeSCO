@@ -379,7 +379,7 @@ class CrossviewModel(nn.Module):
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
         return normalized_tokens
     
-    def show_tokens(self, imgs_tokens, grid_size, grid_shape=None, mode="show", results_path=None, dpi=300, return_tokens=False):
+    def show_tokens(self, imgs_tokens, grid_size, grid_shape=None, mode="show", results_path=None, dpi=300, return_tokens=False, target_size=None):
 
         B, _, _ = imgs_tokens.shape
 
@@ -390,7 +390,16 @@ class CrossviewModel(nn.Module):
             side = int(np.ceil(np.sqrt(B)))
             grid_shape = (side, side)
 
-        fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(grid_shape[1]*5, grid_shape[0]*5))
+        if target_size is not None:
+            # Calculate figsize to match target_size at given dpi
+            # target_size is (width, height) in pixels
+            # figsize is (width, height) in inches
+            # We assume target_size is for the whole figure if B=1, or we scale accordingly
+            figsize = (target_size[0] / dpi, target_size[1] / dpi)
+            fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=figsize)
+        else:
+            fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(grid_shape[1]*5, grid_shape[0]*5))
+
         if isinstance(axes, np.ndarray):
             axes = axes.flatten()
         else:
@@ -418,7 +427,7 @@ class CrossviewModel(nn.Module):
             else:
                 save_path = results_path
             fig.savefig(save_path, dpi=dpi, bbox_inches='tight', pad_inches=0)
-            plt.show()
+            # plt.show()
             plt.close(fig)
         elif mode == "show":
             plt.show()
