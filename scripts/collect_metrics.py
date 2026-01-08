@@ -8,7 +8,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Collect all metrics.json files from subdirectories into one combined JSON file.')
     parser.add_argument('--main_dir', type=str, default=r'..\results', help='Main directory containing result subdirectories')
     parser.add_argument('--path', type=str, default=r'cvglobal_dinov3_imsize448_fov90_nl1_cp30_sp20', help='Subdirectory path to focus ons')
-    parser.add_argument('--output_name', type=str, default='combined_metrics.json', help='Name of the output combined JSON file')
+    parser.add_argument('--output_name', type=str, default='regional_metrics.json', help='Name of the output combined JSON file')
     args = parser.parse_args()
     
     main_dir = os.path.join(args.main_dir, args.path)
@@ -21,7 +21,8 @@ if __name__ == '__main__':
 
             # Get the relative path from main_dir to use as key
             relative_path = os.path.relpath(root, main_dir)
-            
+            if relative_path == '.':
+                continue  # Skip the main directory itself
             try:
                 with open(metrics_path, 'r') as f:
                     metrics_data = json.load(f)

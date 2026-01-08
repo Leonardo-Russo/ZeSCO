@@ -36,13 +36,14 @@ if __name__ == '__main__':
     parser.add_argument('--backbone', type=str, default='dinov3', help='Model to use')
     
     # Hyperparameter ranges
-    parser.add_argument('--num_layers_values', type=int, nargs='+', default=[1, 2, 3, 4, 5, 6], help='List of num_layers to try')
-    parser.add_argument('--crop_percentage_values', type=float, nargs='+', default=[0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], help='List of crop_percentages to try')
+    parser.add_argument('--num_layers_values', type=int, nargs='+', default=[3, 4, 5, 6], help='List of num_layers to try')
+    # parser.add_argument('--crop_percentage_values', type=float, nargs='+', default=[0.2, 0.25, 0.3, 0.35, 0.4], help='List of crop_percentages to try')
+    parser.add_argument('--crop_percentage_values', type=float, nargs='+', default=[0.4], help='List of crop_percentages to try')
     
     parser.add_argument('--fov', type=int, default=90, help='Horizontal Field of View for ground images')
     parser.add_argument('--image_size', type=int, default=448, help='Reference square image dimension')
     parser.add_argument('--loss', type=str, default='cosine_similarity', help='Loss to use for the Orientation Estimation')
-    parser.add_argument('--sample_percentage', type=float, default=0.1, help='Percentage of dataset to sample for testing')
+    parser.add_argument('--sample_percentage', type=float, default=0.3, help='Percentage of dataset to sample for testing')
     parser.add_argument('--recall_k', type=int, default=5, help='K value for Recall@K calculation')
     parser.add_argument('--main_output_dir', type=str, default=r'..\results\finetune_results', help='Directory to save output files')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')

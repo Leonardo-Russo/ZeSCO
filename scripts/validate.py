@@ -35,7 +35,7 @@ def str2bool(v):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test the ZeSCO model on individual datasets.')
     parser.add_argument('--dataset', type=str, default='CVGlobal', help='Dataset to use')
-    parser.add_argument('--regional_mode', type=str2bool, default=True, help='Validate on each region separately')
+    parser.add_argument('--regional_mode', type=str2bool, default=False, help='Validate on each region separately')
     parser.add_argument('--backbone', type=str, default='dinov3', help='Model to use')
     parser.add_argument('--num_layers', type=int, default=6, help='Number of layers in which to divide the image')
     parser.add_argument('--crop_percentage', type=float, default=0.35, help='Percentage of the image to crop')
@@ -54,6 +54,8 @@ if __name__ == '__main__':
         print("Regional mode can only be used with CVGlobal datasets.")
         args.regional_mode = False
         print("Setting regional_mode to False.")
+    if args.dataset in ['CVUSA']:
+        args.sample_percentage = 1.0
 
     # Settings
     image_size = args.image_size
@@ -65,6 +67,9 @@ if __name__ == '__main__':
     # Set seed
     random.seed(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
     # Define the Device
     device = "cuda" if torch.cuda.is_available() else "cpu"
