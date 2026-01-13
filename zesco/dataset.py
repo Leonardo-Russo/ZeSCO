@@ -335,7 +335,6 @@ def get_transforms(processor, image_size, aerial_scaling, crop_percentage, horiz
             transforms.Resize((image_size, image_size*horizontal_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
             transforms.CenterCrop(image_size),
             transforms.ToTensor(),
-            transforms.Lambda(lambda x: x * 255.0),  # Match do_rescale=False behavior
             transforms.Normalize(mean=mean_ground, std=std_ground)
         ])
     else:
@@ -356,7 +355,6 @@ def get_transforms(processor, image_size, aerial_scaling, crop_percentage, horiz
             transforms.Resize((image_size*aerial_scaling, image_size*aerial_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
             transforms.CenterCrop((image_size, image_size)),
             transforms.ToTensor(),
-            transforms.Lambda(lambda x: x * 255.0),  # Match do_rescale=False behavior
             transforms.Normalize(mean=mean_aerial, std=std_aerial)
         ])
     else:

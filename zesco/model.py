@@ -60,6 +60,7 @@ class CrossviewModel(nn.Module):
 
         elif backbone == 'clip':
 
+            self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
             self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16")
             self.patch_size = 16
 
