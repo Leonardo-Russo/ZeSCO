@@ -116,7 +116,7 @@ def extract_cutout_from_360(image, fov=(90, 180), yaw=180, pitch=90, debug=False
     if debug:
         print(f"Pano Shape: {h}x{w}")
     
-    x_center = (yaw / 360.0) * w
+    x_center = ((-yaw % 360) / 360.0) * w
     y_center = (pitch / 180.0) * h
     fov_x = int((fov[0] / 360.0) * w)
     fov_y = int((fov[1] / 180.0) * h)
@@ -140,10 +140,7 @@ def extract_cutout_from_360(image, fov=(90, 180), yaw=180, pitch=90, debug=False
         print(f"Clamped y coordinates: y1={y1_clamped}, y2={y2_clamped}")
     
     # Handle horizontal wrapping (cylindrical projection)
-    if x2 - x1 >= w:
-        # If FOV is 360° or larger, just take the whole width
-        cutout = image[y1_clamped:y2_clamped, :]
-    elif x1 < 0:
+    if x1 < 0:
         # Wraps around the left edge
         left_part = image[y1_clamped:y2_clamped, x1 % w:]
         right_part = image[y1_clamped:y2_clamped, :x2]
@@ -162,12 +159,7 @@ def extract_cutout_from_360(image, fov=(90, 180), yaw=180, pitch=90, debug=False
         fig, ax = plt.subplots(1, figsize=(10, 5))
         ax.imshow(image)
         
-        if x2 - x1 >= w:
-            # Full width
-            rect = patches.Rectangle((0, y1_clamped), w, y2_clamped-y1_clamped, 
-                                     linewidth=2, edgecolor='r', facecolor='none')
-            ax.add_patch(rect)
-        elif x1 < 0 or x2 > w:
+        if x1 < 0 or x2 > w:
             # Wrapping case - draw two rectangles
             if x1 < 0:
                 # Left wrap
@@ -191,7 +183,8 @@ def extract_cutout_from_360(image, fov=(90, 180), yaw=180, pitch=90, debug=False
 
         ax.axis('off')
         
-        plt.title('Cutout Region from Original Image')
+        # plt.title('Cutout Region from Original Image')
+        print("Displaying cutout region on original image.")
         plt.show()
 
     return cutout
@@ -268,7 +261,10 @@ class PairedImagesDataset(Dataset):
 
         # Choose Cropping Parameters
         fov = (self.fov_x, self.fov_y)  # set fov
-        yaw = random.randint(0, 360)    # random yaw between 0 and 360 degrees
+        if debug:
+            yaw = int(input("Enter yaw value (or press Enter to use random value): "))
+        else:
+            yaw = random.randint(0, 360)    # random yaw between 0 and 360 degrees
         pitch = 90                      # fixed pitch at 90 degrees
 
         if self.transform_ground:
@@ -303,6 +299,9 @@ def get_transforms(processor, image_size, aerial_scaling, crop_percentage, horiz
     else:
         top_crop = crop_percentage - threshold
         bottom_crop = threshold
+
+    bottom_crop = crop_percentage
+    top_crop = crop_percentage
         
     if isinstance(processor, tuple):
         processor_ground, processor_aerial = processor
@@ -336,7 +335,6 @@ def get_transforms(processor, image_size, aerial_scaling, crop_percentage, horiz
             transforms.Resize((image_size, image_size*horizontal_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
             transforms.CenterCrop(image_size),
             transforms.ToTensor(),
-            transforms.Lambda(lambda x: x * 255.0),  # Match do_rescale=False behavior
             transforms.Normalize(mean=mean_ground, std=std_ground)
         ])
     else:
@@ -357,7 +355,6 @@ def get_transforms(processor, image_size, aerial_scaling, crop_percentage, horiz
             transforms.Resize((image_size*aerial_scaling, image_size*aerial_scaling), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
             transforms.CenterCrop((image_size, image_size)),
             transforms.ToTensor(),
-            transforms.Lambda(lambda x: x * 255.0),  # Match do_rescale=False behavior
             transforms.Normalize(mean=mean_aerial, std=std_aerial)
         ])
     else:

@@ -64,6 +64,7 @@ def validate(model, processors, data_loader, config):
 
     # Core Processing Loop
     delta_yaws = []
+    delta_yaws_dir = []
     with tqdm(total=len(data_loader.dataset), desc="Processing Images") as pbar:
         for batch_idx, (ground_images, aerial_images, fovs, yaws, pitchs) in enumerate(data_loader):
             ground_images = ground_images.to(device)
@@ -86,6 +87,7 @@ def validate(model, processors, data_loader, config):
                 aerial_image = aerial_images[i:i+1]
                 fov = (fov_x[i].item(), fov_y[i].item())
                 yaw = yaws[i].item()
+                heading = yaw - 90
                 pitch = pitchs[i].item()
                 
                 # Extract features for the i-th image in the batch
@@ -153,10 +155,13 @@ def validate(model, processors, data_loader, config):
                 # Find the best alignment
                 best_orientation, distances, min_distance, confidence = find_alignment(loss, vertical_averaged_tokens, radial_averaged_tokens, grid_size_ground, fov_x_i, debug=False)
 
-                delta_yaw = np.abs(((90 - (yaw - 180)) - best_orientation + 180) % 360 - 180)
+                delta_yaw = np.abs(((best_orientation - heading) + 180) % 360 - 180)
+                delta_yaw_dir = np.abs((delta_yaw + 90) % 180 - 90)
                 if delta_yaw < 0:
                     delta_yaw += 180
+
                 delta_yaws.append(delta_yaw)
+                delta_yaws_dir.append(delta_yaw_dir)
 
                 if save_mode == 'all':
 
@@ -174,87 +179,74 @@ def validate(model, processors, data_loader, config):
 
                 # Update progress bar with current results
                 pbar.set_postfix({
-                    'Delta Yaw Median': f"{np.median(delta_yaws):.2f}°" 
-                    # 'Batch': f"{batch_idx+1}/{len(data_loader)}"
+                    'Med180': f"{np.median(delta_yaws):.2f}°",
+                    'Mean90': f"{np.mean(delta_yaws_dir):.2f}°"
                 })
                 pbar.update(1)  # Increment by 1 for each image processed
 
-    # Output the delta_yaw errors
+    # Store Data
     delta_yaws = np.array(delta_yaws)
+    delta_yaws_dir = np.array(delta_yaws_dir)
+    with open(os.path.join(results_dir, 'data.pkl'), 'wb') as f:
+        pickle.dump(
+            {
+                'delta_yaws': delta_yaws,
+                'delta_yaws_dir': delta_yaws_dir
+            },
+            f
+        )
+
+    # Store Metrics
     error_mean = np.mean(delta_yaws)
-    error_std = np.std(delta_yaws)
     error_median = np.median(delta_yaws)
     recall_at_k = np.mean(delta_yaws <= config['recall_k']) * 100.0
+    error_mean_dir = np.mean(delta_yaws_dir)
+    error_median_dir = np.median(delta_yaws_dir)
+    recall_at_k_dir = np.mean(delta_yaws_dir <= config['recall_k']) * 100.0
+    with open(os.path.join(results_dir, 'metrics.json'), 'w') as f:
+        json.dump(
+            {
+                "mean": float(error_mean),
+                "median": float(error_median),
+                f"recall_at_{config['recall_k']}": float(recall_at_k),
+                "tau_mean": float(error_mean_dir),
+                "tau_median": float(error_median_dir),
+                f"tau_recall_at_{config['recall_k']}": float(recall_at_k_dir)
+            },
+            f,
+            indent=4
+        )
+    print(f"Med@180: {error_median:.2f}°")
+    print(f"Mean@90: {error_mean_dir:.2f}°")
+    print(f"r@{config['recall_k']}: {recall_at_k:.2f}%")
+    print(f'Med@90: {error_median_dir:.2f}°')
 
-    # Calculate metrics for directional errors
-    directional_errors = np.minimum(delta_yaws, 180 - delta_yaws)
-    dir_error_mean = np.mean(directional_errors)
-    dir_error_std = np.std(directional_errors)
-    dir_error_median = np.median(directional_errors)
-    tau_recall_at_k = np.mean(directional_errors <= config['recall_k']) * 100.0
-
-    # Save all metrics to JSON
-    metrics = {
-        "mean": float(error_mean),
-        "median": float(error_median),
-        "tau_mean": float(dir_error_mean),
-        "tau_median": float(dir_error_median),
-        f"recall_at_{config['recall_k']}": float(recall_at_k),
-        f"tau_recall_at_{config['recall_k']}": float(tau_recall_at_k)
-    }
-
-    print(f"\nOverall Delta Yaw Mean Error: {error_mean:.2f}°")
-    print(f"Overall Delta Yaw Median Error: {error_median:.2f}°")
-    print(f"Overall Recall@{config['recall_k']}: {recall_at_k:.2f}%")
-    print(f"\nDirectional Error Mean (τMean): {dir_error_mean:.2f}°")
-    print(f"Directional Error Median (τMedian): {dir_error_median:.2f}°")
-    print(f"Directional Error Recall@{config['recall_k']} (τRecall): {tau_recall_at_k:.2f}%")
-
-    # Update histogram to show recall instead of standard deviation
+    # Store Histograms
     if save_mode in ['hist', 'all']:
         plt.figure(figsize=(10, 6))
         plt.hist(delta_yaws, bins=50, edgecolor='black', alpha=0.7)
         plt.xlabel('Delta Yaw (degrees)', fontsize=12)
         plt.ylabel('Frequency', fontsize=12)
-        plt.title(f'Delta Yaw Distribution - CVGlobal\n' +
-                r'$\tau$Mean: ' + f'{dir_error_mean:.2f}°, Median: {error_median:.2f}°, r@{config['recall_k']}: {recall_at_k:.2f}%',
+        plt.title(f'Orientation Errors - {config["dataset"]}\n' +
+                f'Med@180: {error_median:.2f}°, Mean@90: {error_mean_dir:.2f}°, r@{config['recall_k']}: {recall_at_k:.2f}%',
                 fontsize=14)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig(os.path.join(results_dir, 'delta_yaws_hist.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(results_dir, 'orientation_errors.png'), dpi=300, bbox_inches='tight')
         plt.close()
 
         # Plot histogram for directional errors
         plt.figure(figsize=(10, 6))
-        plt.hist(directional_errors, bins=50, edgecolor='black', alpha=0.7)
-        plt.xlabel('Directional Error (degrees)', fontsize=12)
+        plt.hist(delta_yaws_dir, bins=50, edgecolor='black', alpha=0.7)
+        plt.xlabel('Orientation Directional Error (degrees)', fontsize=12)
         plt.ylabel('Frequency', fontsize=12)
-        plt.title(f'Directional Error Distribution - CVGlobal\n' +
-                r'$\tau$Mean: ' + f'{dir_error_mean:.2f}°, Median: {dir_error_median:.2f}°, r@{config['recall_k']}: {recall_at_k:.2f}%',
+        plt.title(f'Directional Errors - {config["dataset"]}\n' +
+                f'Med@180: {error_median:.2f}°, Mean@90: {error_mean_dir:.2f}°, r@{config['recall_k']}: {recall_at_k:.2f}%',
                 fontsize=14)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig(os.path.join(results_dir, 'directional_error_hist.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(results_dir, 'orientation_directional_errors.png'), dpi=300, bbox_inches='tight')
         plt.close()
     
-    # Save delta yaws to pickle file
-    with open(os.path.join(results_dir, 'delta_yaws.pkl'), 'wb') as f:
-        pickle.dump(delta_yaws, f)
 
-    with open(os.path.join(results_dir, 'metrics.json'), 'w') as f:
-                json.dump(metrics, f, indent=4)
-    
-    # Save statistics to well-formatted info.txt file
-    with open(os.path.join(results_dir, 'info.txt'), 'w') as f:
-        f.write("Delta Yaw Error Statistics\n")
-        f.write("=" * 30 + "\n\n")
-        f.write(f"Total Samples: {len(delta_yaws)}\n\n")
-        f.write("Error Metrics:\n")
-        f.write("-" * 15 + "\n")
-        f.write(f"Mean Delta Yaw Error:       {np.mean(delta_yaws):.4f}°\n")
-        f.write(f"Standard Deviation:         {np.std(delta_yaws):.4f}°\n")
-        f.write(f"Median Delta Yaw Error:     {np.median(delta_yaws):.4f}°\n")
-        f.write(f"Minimum Delta Yaw Error:    {np.min(delta_yaws):.4f}°\n")
-        f.write(f"Maximum Delta Yaw Error:    {np.max(delta_yaws):.4f}°\n")
-
-    return delta_yaws
+    return delta_yaws, delta_yaws_dir
